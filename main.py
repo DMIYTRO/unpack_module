@@ -83,6 +83,10 @@ def process_archives(target_dir: str):
             continue
 
         # Валидируем папку
+        print(f"\n{'='*60}")
+        print(f"📦 ОБРАБОТКА ПАПКИ: {folder.name}")
+        print(f"{'='*60}")
+        
         status = validate_folder(str(folder))
 
         if status == "good":
