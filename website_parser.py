@@ -1,5 +1,7 @@
 import os
 import re
+from datetime import date, timedelta
+from urllib.parse import urlencode
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
@@ -16,6 +18,35 @@ class SiteAccessError(WebsiteParserError):
 class OrderDataError(WebsiteParserError):
     """Страница получена, но её структура или данные заказа не распознаны."""
 
+
+def build_orders_url(order_number: str, today: date | None = None) -> str:
+    """Собрать URL поиска с плавающим окном вокруг текущей даты."""
+    if not order_number.isdigit():
+        raise OrderDataError(f"Некорректный номер заказа: {order_number!r}")
+
+    current_date = today or date.today()
+    date_from = (current_date - timedelta(days=60)).isoformat()
+    date_till = (current_date + timedelta(days=1)).isoformat()
+    query = urlencode(
+        {
+            "type": "all",
+            "datefrom": date_from,
+            "datetill": date_till,
+            "datefrom2": date_from,
+            "datetill2": date_till,
+            "client_id": "",
+            "orderid": order_number,
+            "manager": 0,
+            "statuss": 0,
+            "politics": 0,
+            "pay": 0,
+            "delivery": 0,
+            "sborka_id": "",
+            "button": "ok",
+        }
+    )
+    return f"https://sborka.ua/adm/orders.php?{query}"
+
 def fetch_suborders(order_number: str) -> list[str]:
     """
     Авторизуется на сайте, загружает страницу заказа и возвращает 
@@ -27,11 +58,8 @@ def fetch_suborders(order_number: str) -> list[str]:
 
     if not LOGIN_USER or not ADMIN_PASSWORD:
         raise SiteAccessError("В .env не заданы LOGIN_USER или ADMIN_PASSWORD")
-    if not order_number.isdigit():
-        raise OrderDataError(f"Некорректный номер заказа: {order_number!r}")
-
     # Пароль передаётся Playwright отдельно, поэтому не попадает в URL и логи.
-    url = f"https://sborka.ua/adm/orders.php?type=all&datefrom=2026-06-17&datetill=2026-08-16&datefrom2=2026-06-17&datetill2=2026-08-16&client_id=&orderid={order_number}&manager=0&statuss=0&politics=0&pay=0&delivery=0&sborka_id=&button=ok"
+    url = build_orders_url(order_number)
 
     print(f"[{order_number}] Подключение к сайту и поиск подзаказов...")
     

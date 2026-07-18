@@ -49,3 +49,9 @@ python3 main.py
 LOGIN_USER=ваш_логин
 ADMIN_PASSWORD=ваш_пароль
 ```
+
+## Ubuntu / production
+
+Для запуска на Ubuntu используйте `requirements-production.txt`, Gunicorn и
+шаблон systemd из `deploy/ubuntu/`. Полная инструкция находится в
+`deploy/ubuntu/README.md`.

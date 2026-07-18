@@ -1,7 +1,7 @@
-import os
 from pathlib import Path
 from classifier import classify_face_back_paths
 from file_discovery import list_layout_files
+from atomic_rename import atomic_rename_many
 
 def generate_new_names(folder_name: str, classified_files: dict) -> dict:
     """
@@ -57,8 +57,10 @@ def rename_files_in_folder(folder_path: str):
     # Шаг 2. Генерируем новые имена
     new_names = generate_new_names(folder_name, classified)
     
-    # Шаг 3. Переименовываем
+    # Шаг 3. Сначала строим и целиком проверяем пакет, затем применяем его.
     print(f"\n--- Переименование в папке: {folder_name} ---")
+    operations = []
+    report_entries = []
     for side, old_path in classified.items():
         if old_path and old_path in files:
             new_name = new_names.get(side)
@@ -69,14 +71,15 @@ def rename_files_in_folder(folder_path: str):
                 original_name = str(old_path.relative_to(path))
                 display_new_name = str(new_path.relative_to(path))
                 
+                operations.append((old_path, new_path))
+                report_entries.append((side, original_name, display_new_name))
+
+    atomic_rename_many(operations)
+    if report_entries:
+        with open("rename_log.txt", "a", encoding="utf-8") as log_file:
+            for side, original_name, display_new_name in report_entries:
                 print(f"[{side.upper()}] {original_name}  --->  {display_new_name}")
-                
-                # Фактическое переименование файла:
-                os.rename(old_path, new_path)
-                
-                # Запись в лог
-                with open("rename_log.txt", "a", encoding="utf-8") as log_file:
-                    log_file.write(f"[{folder_name}] {original_name} -> {display_new_name}\n")
+                log_file.write(f"[{folder_name}] {original_name} -> {display_new_name}\n")
 
 if __name__ == "__main__":
     # Тестируем на нашей 4-4 папке

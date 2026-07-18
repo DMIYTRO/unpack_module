@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import db
 import pipeline_runner
 import scheduler as sched
+import runtime
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -31,6 +32,63 @@ app.jinja_env.filters["basename"] = os.path.basename
 
 PROJECT_ROOT = Path(__file__).parent.parent
 PREVIEW_CACHE_DIR = Path(tempfile.gettempdir()) / "unpack_module_previews"
+
+
+def _create_bitmap_preview(source: Path, preview: Path):
+    """Create a PNG preview with Linux tools first, then macOS fallbacks."""
+    imagemagick = shutil.which("magick") or shutil.which("convert")
+    if imagemagick:
+        command = [imagemagick]
+        if Path(imagemagick).name == "magick":
+            command.append("convert")
+        command.extend([
+            f"{source}[0]",
+            "-thumbnail",
+            "1600x1600>",
+            str(preview),
+        ])
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+            return
+        except subprocess.SubprocessError:
+            preview.unlink(missing_ok=True)
+
+    try:
+        subprocess.run(
+            ["sips", "--setProperty", "format", "png", str(source), "--out", str(preview)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        return
+    except (FileNotFoundError, subprocess.SubprocessError):
+        preview.unlink(missing_ok=True)
+
+    quicklook_dir = PREVIEW_CACHE_DIR / f"quicklook_{preview.stem}"
+    try:
+        quicklook_dir.mkdir(exist_ok=True)
+        subprocess.run(
+            ["qlmanage", "-t", "-s", "800", "-o", str(quicklook_dir), str(source)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        generated = next(quicklook_dir.glob("*.png"), None)
+        if not generated:
+            raise FileNotFoundError("Quick Look did not create a PNG")
+        shutil.move(str(generated), str(preview))
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("No installed preview tool supports this file") from exc
+    finally:
+        shutil.rmtree(quicklook_dir, ignore_errors=True)
 
 
 @app.before_request
@@ -211,38 +269,9 @@ def conflict_preview(conflict_id, relative_path):
         preview = PREVIEW_CACHE_DIR / f"{hashlib.sha256(stamp).hexdigest()}.png"
         if not preview.exists():
             try:
-                subprocess.run(
-                    ["sips", "--setProperty", "format", "png", str(source), "--out", str(preview)],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    timeout=30,
-                )
-            except (FileNotFoundError, subprocess.SubprocessError):
-                # Для CDR и части AI-файлов sips может не иметь декодера.
-                # Пробуем системный Quick Look, если для формата установлен плагин.
-                quicklook_dir = PREVIEW_CACHE_DIR / f"quicklook_{preview.stem}"
-                try:
-                    quicklook_dir.mkdir(exist_ok=True)
-                    subprocess.run(
-                        ["qlmanage", "-t", "-s", "800", "-o", str(quicklook_dir), str(source)],
-                        check=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.PIPE,
-                        timeout=30,
-                    )
-                    generated = next(quicklook_dir.glob("*.png"), None)
-                    if not generated:
-                        raise FileNotFoundError("Quick Look не создал PNG")
-                    shutil.move(str(generated), str(preview))
-                except (FileNotFoundError, subprocess.SubprocessError):
-                    abort(
-                        415,
-                        "Система не умеет создать превью этого файла. "
-                        "Для CDR установите Quick Look-плагин CorelDRAW или экспортируйте PDF.",
-                    )
-                finally:
-                    shutil.rmtree(quicklook_dir, ignore_errors=True)
+                _create_bitmap_preview(source, preview)
+            except RuntimeError:
+                abort(415, "Не удалось создать превью. Для Ubuntu установите ImageMagick/Ghostscript или экспортируйте PDF.")
         return send_file(preview, mimetype="image/png", conditional=True)
 
     abort(415, "Предпросмотр доступен для PDF, JPG, TIFF, PSD, AI, CDR, PNG, GIF и WebP")
@@ -264,6 +293,7 @@ def save_schedule():
     target_dir = request.form.get("target_dir", "original_archives").strip()
     output_dir = request.form.get("output_dir", "").strip() or target_dir
     try:
+        sched.start_scheduler()
         sched.update_schedule(cron_expr, enabled, target_dir, output_dir)
     except ValueError as exc:
         flash(str(exc), "error")
@@ -282,17 +312,11 @@ def api_stats():
 # ── Запуск ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    db.init_db()
-    # Восстановить расписание из БД при старте
-    config = db.get_schedule()
-    if config.get("enabled"):
-        try:
-            sched.update_schedule(
-            config["cron_expression"],
-            True,
-            config["target_dir"],
-            config.get("output_dir") or config["target_dir"],
-            )
-        except ValueError as exc:
-            print(f"Расписание отключено: {exc}")
-    app.run(debug=False, port=5050, threaded=True, use_reloader=False)
+    try:
+        runtime.start_runtime()
+    except ValueError as exc:
+        print(f"Расписание отключено: {exc}")
+    try:
+        app.run(debug=False, port=5050, threaded=True, use_reloader=False)
+    finally:
+        runtime.shutdown_runtime()

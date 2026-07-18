@@ -1,6 +1,7 @@
 from pathlib import Path
 from filename_parser import parse_filename
 from file_discovery import list_layout_files
+from classifier import classify_face_back_paths
 
 def parse_sides_from_foldername(foldername: str) -> str | None:
     """Извлекает сторонность тем же строгим парсером, что и номер заказа."""
@@ -41,7 +42,10 @@ def validate_folder(folder_path: str) -> str:
             return f"bad: expected 1 file for {sides_str}, but got {file_count}"
     elif expected_files == 2:
         if file_count == 2:
-            return "good"
+            classified = classify_face_back_paths(files)
+            if classified["face"] is not None and classified["back"] is not None:
+                return "good"
+            return "bad: ambiguous face/back classification (needs extra check)"
         elif file_count == 1:
             return f"bad: expected 2 files for {sides_str}, but got 1 (needs extra check)"
         else:

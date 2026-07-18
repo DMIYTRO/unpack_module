@@ -15,6 +15,7 @@ from validator import validate_folder
 from renamer import rename_files_in_folder
 from filename_parser import parse_filename
 from file_discovery import list_layout_files
+from atomic_rename import atomic_rename_many
 
 # Маркер успешной обработки папки
 DONE_MARKER = ".done"
@@ -141,6 +142,7 @@ def process_archives(source_dir: str, output_dir: str | None = None):
     unpack_archives(str(source_path), str(target_path))
 
     print("\n=== ЭТАП 2: Проверка и Переименование ===")
+    failures = []
     for folder in sorted(target_path.iterdir()):
         # Игнорируем файлы и служебные папки
         if not folder.is_dir():
@@ -159,6 +161,7 @@ def process_archives(source_dir: str, output_dir: str | None = None):
         print(f"{'='*60}")
         
         status = validate_folder(str(folder))
+        requires_operator = "ambiguous" in status.lower()
 
         if status == "good":
             print(f"\n[+] Папка прошла проверку (Локальный режим): {folder.name}")
@@ -208,24 +211,27 @@ def process_archives(source_dir: str, output_dir: str | None = None):
                         )
                     print("    └────────────────────────────────────────────────────────")
 
-                    if expected_file_count == len(files):
+                    if expected_file_count == len(files) and not requires_operator:
                         # Полное совпадение — переименовываем сразу без вопросов
                         print("    -> Переименовываем...")
+                        operations = [(file_obj, file_obj.with_name(new_name)) for file_obj, _, new_name in mapping_full]
+                        atomic_rename_many(operations)
+                        log_entries = []
                         for file_obj, sub_id, new_name in mapping_full:
                             new_path = file_obj.with_name(new_name)
                             display_name = str(file_obj.relative_to(folder))
                             if len(display_name) > max_name_len:
                                 display_name = display_name[:max_name_len-3] + "..."
                             print(f"    [SITE] {display_name:<{max_name_len}}  →  {new_name}")
-                            os.rename(str(file_obj), str(new_path))
-                            with open("rename_log.txt", "a", encoding="utf-8") as log_file:
-                                log_file.write(
-                                    f"[{folder.name}] {file_obj.relative_to(folder)} -> "
-                                    f"{new_path.relative_to(folder)}\n"
-                                )
+                            log_entries.append(
+                                f"[{folder.name}] {file_obj.relative_to(folder)} -> "
+                                f"{new_path.relative_to(folder)}\n"
+                            )
+                        with open("rename_log.txt", "a", encoding="utf-8") as log_file:
+                            log_file.writelines(log_entries)
                         mark_as_done(folder, source_path)
                     else:
-                        # Несовпадение — конфликт!
+                        # Несовпадение или неоднозначные стороны — решает оператор.
                         if WEB_MODE:
                             conflict_data = {
                                 "folder_path": str(folder.resolve()),
@@ -247,21 +253,31 @@ def process_archives(source_dir: str, output_dir: str | None = None):
                             continue
                         else:
                             # Консольный режим
-                            answer = input("\n    Количество не совпадает! Всё равно переименовать сопоставленные? [y/n]: ").strip().lower()
+                            prompt_reason = (
+                                "Стороны макетов определены неоднозначно"
+                                if requires_operator
+                                else "Количество файлов не совпадает"
+                            )
+                            answer = input(
+                                f"\n    {prompt_reason}! Всё равно переименовать сопоставленные? [y/n]: "
+                            ).strip().lower()
                             if answer == "y":
                                 print("    -> Переименовываем...")
+                                operations = [(file_obj, file_obj.with_name(new_name)) for file_obj, _, new_name in mapping_full]
+                                atomic_rename_many(operations)
+                                log_entries = []
                                 for file_obj, sub_id, new_name in mapping_full:
                                     new_path = file_obj.with_name(new_name)
                                     display_name = str(file_obj.relative_to(folder))
                                     if len(display_name) > max_name_len:
                                         display_name = display_name[:max_name_len-3] + "..."
                                     print(f"    [SITE] {display_name:<{max_name_len}}  →  {new_name}")
-                                    os.rename(str(file_obj), str(new_path))
-                                    with open("rename_log.txt", "a", encoding="utf-8") as log_file:
-                                        log_file.write(
-                                            f"[{folder.name}] {file_obj.relative_to(folder)} -> "
-                                            f"{new_path.relative_to(folder)}\n"
-                                        )
+                                    log_entries.append(
+                                        f"[{folder.name}] {file_obj.relative_to(folder)} -> "
+                                        f"{new_path.relative_to(folder)}\n"
+                                    )
+                                with open("rename_log.txt", "a", encoding="utf-8") as log_file:
+                                    log_file.writelines(log_entries)
                                 mark_as_done(folder, source_path)
                             else:
                                 reason = (
@@ -274,6 +290,14 @@ def process_archives(source_dir: str, output_dir: str | None = None):
 
                 except Exception as e:
                     print(f"    ❌ [ОШИБКА] Сбой при работе с сайтом: {e}")
+                    failures.append(f"{folder.name}: {e}")
+            else:
+                reason = f"В имени папки нет номера заказа ({status})"
+                print(f"    ❌ {reason}")
+                failures.append(f"{folder.name}: {reason}")
+
+    if failures:
+        raise RuntimeError("Не обработаны заказы: " + "; ".join(failures))
 
 
 if __name__ == "__main__":

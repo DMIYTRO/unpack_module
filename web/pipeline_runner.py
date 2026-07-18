@@ -15,11 +15,17 @@ from pathlib import Path
 
 # PROJECT_ROOT — корень unpack_module (родитель папки web/)
 PROJECT_ROOT = Path(__file__).parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from atomic_rename import atomic_rename_many
 
 # Глобальные хранилища (живут пока Flask-процесс работает)
 run_queues: dict[str, Queue] = {}          # run_id → очередь строк лога
 run_processes: dict[str, object] = {}      # run_id → subprocess.Popen
 conflict_responses: dict[int, Queue] = {}  # conflict_id → Queue('APPROVE'|'REJECT')
+_runs_lock = threading.Lock()
+_active_run_ids: set[str] = set()
 
 
 class PipelineRunningError(Exception):
@@ -29,29 +35,34 @@ class PipelineRunningError(Exception):
 
 def is_any_running() -> bool:
     """Проверяет, есть ли активные процессы переименования."""
-    for rid, proc in list(run_processes.items()):
-        if proc.poll() is not None:  # Процесс уже завершился
-            run_processes.pop(rid, None)
-    return len(run_processes) > 0
+    with _runs_lock:
+        return bool(_active_run_ids)
 
 
 def start_run(source_dir: str, output_dir: str | None = None, trigger: str = "manual") -> str:
     """Запустить пайплайн в фоновом потоке. Вернуть run_id."""
     import db
 
-    if is_any_running():
-        raise PipelineRunningError("Пайплайн уже выполняется. Пожалуйста, подождите завершения текущего запуска.")
-
     run_id = str(uuid.uuid4())
+    with _runs_lock:
+        if _active_run_ids:
+            raise PipelineRunningError("Пайплайн уже выполняется. Пожалуйста, подождите завершения текущего запуска.")
+        _active_run_ids.add(run_id)
+
     q: Queue = Queue()
     run_queues[run_id] = q
-    db.log_run(run_id, trigger)
-
-    threading.Thread(
-        target=_worker,
-        args=(run_id, source_dir, output_dir or source_dir),
-        daemon=True,
-    ).start()
+    try:
+        db.log_run(run_id, trigger)
+        threading.Thread(
+            target=_worker,
+            args=(run_id, source_dir, output_dir or source_dir),
+            daemon=True,
+        ).start()
+    except Exception:
+        run_queues.pop(run_id, None)
+        with _runs_lock:
+            _active_run_ids.discard(run_id)
+        raise
 
     return run_id
 
@@ -63,6 +74,7 @@ def _worker(run_id: str, source_dir: str, output_dir: str):
     q = run_queues[run_id]
     env = {**os.environ, "WEB_MODE": "1", "RUN_ID": run_id, "PYTHONUNBUFFERED": "1"}
 
+    protocol_error = False
     try:
         proc = subprocess.Popen(
             [sys.executable, "-u", str(PROJECT_ROOT / "main.py"), source_dir, output_dir],
@@ -97,6 +109,7 @@ def _worker(run_id: str, source_dir: str, output_dir: str):
                     )
                 except Exception as exc:
                     q.put(f"❌ Ошибка сохранения конфликта: {exc}")
+                    protocol_error = True
                 continue
 
             # ── Парсинг переименований для БД ───────────────────────────
@@ -105,7 +118,7 @@ def _worker(run_id: str, source_dir: str, output_dir: str):
             q.put(line)
 
         proc.wait()
-        status = "done" if proc.returncode == 0 else "error"
+        status = "done" if proc.returncode == 0 and not protocol_error else "error"
 
     except Exception as exc:
         status = "error"
@@ -115,6 +128,9 @@ def _worker(run_id: str, source_dir: str, output_dir: str):
         db.finish_run(run_id, status)
         q.put(None)  # Sentinel — SSE-стрим завершён
         run_processes.pop(run_id, None)
+        _current_folder.pop(run_id, None)
+        with _runs_lock:
+            _active_run_ids.discard(run_id)
 
 
 # Паттерны для парсинга строк из stdout main.py / renamer.py
@@ -229,14 +245,15 @@ def resolve_conflict(conflict_id: int, action: str, mapping: list[list[str]] | N
 
     if action == "approve":
         mapping = mapping if mapping is not None else json.loads(conflict["mapping_json"])
-        # Переименовываем файлы по сохраненному маппингу
+        operations = []
         for orig_name, sub_id, new_name in mapping:
-            old_file = folder_path / orig_name
-            new_file = folder_path / new_name
-            if old_file.exists():
-                os.rename(str(old_file), str(new_file))
-                
-            # Пишем в лог-файлы и БД
+            source_rel = _safe_relative_path(orig_name)
+            destination_rel = _safe_relative_path(new_name)
+            operations.append((folder_path / source_rel, folder_path / destination_rel))
+
+        # Проверка всех исходников и назначений происходит до первого изменения.
+        atomic_rename_many(operations)
+        for orig_name, sub_id, new_name in mapping:
             db.log_rename(run_id, folder_path.name, orig_name, new_name, "site")
             with open(str(PROJECT_ROOT / "rename_log.txt"), "a", encoding="utf-8") as log_file:
                 log_file.write(f"[{folder_path.name}] {orig_name} -> {new_name}\n")
