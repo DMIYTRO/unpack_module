@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from flask import (
     Flask, render_template, request, redirect,
-    url_for, Response, jsonify,
+    url_for, Response, jsonify, flash,
 )
 
 # Добавляем корень проекта в путь чтобы импортировать db, pipeline_runner
@@ -40,20 +40,26 @@ def dashboard():
     stats = db.get_stats()
     recent_runs = db.get_recent_runs(6)
     pending = db.get_pending_conflicts()
+    is_running = pipeline_runner.is_any_running()
     return render_template(
         "dashboard.html",
         stats=stats,
         recent_runs=recent_runs,
         pending_conflicts=pending,
         active_run_id=run_id,
+        is_running=is_running,
     )
 
 
 @app.route("/run", methods=["POST"])
 def run_pipeline():
     target_dir = request.form.get("target_dir", "original_archives").strip()
-    run_id = pipeline_runner.start_run(target_dir, trigger="manual")
-    return redirect(url_for("dashboard") + f"?run_id={run_id}")
+    try:
+        run_id = pipeline_runner.start_run(target_dir, trigger="manual")
+        return redirect(url_for("dashboard") + f"?run_id={run_id}")
+    except pipeline_runner.PipelineRunningError as e:
+        flash(str(e), "error")
+        return redirect(url_for("dashboard"))
 
 
 # ── SSE Стрим ────────────────────────────────────────────────────────────────
