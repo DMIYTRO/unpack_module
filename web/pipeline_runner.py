@@ -201,6 +201,14 @@ def resolve_conflict(conflict_id: int, action: str):
             f"Обработано оператором через веб-интерфейс: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
             encoding="utf-8",
         )
+        
+        # Переносим соответствующий архив в _DONE_
+        try:
+            sys.path.insert(0, str(PROJECT_ROOT))
+            from main import move_archive_to_done
+            move_archive_to_done(folder_path)
+        except Exception as e:
+            print(f"Ошибка при переносе архива в resolve_conflict: {e}")
     elif action == "reject":
         # Переносим в ручную проверку
         dest_dir = folder_path.parent / "_REQUIRES_MANUAL_CHECK_"

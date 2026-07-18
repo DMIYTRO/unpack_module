@@ -21,17 +21,38 @@ DONE_MARKER = ".done"
 MANUAL_CHECK_DIR = "_REQUIRES_MANUAL_CHECK_"
 
 
+def move_archive_to_done(folder: Path):
+    """Переносит соответствующий .rar архив в папку _DONE_."""
+    base_dir = folder.parent
+    done_dir = base_dir / "_DONE_"
+    
+    rar_name = folder.name + ".rar"
+    rar_path = base_dir / rar_name
+    
+    if rar_path.exists():
+        done_dir.mkdir(exist_ok=True)
+        dest_path = done_dir / rar_name
+        if dest_path.exists():
+            dest_path = done_dir / (folder.name + "_" + datetime.now().strftime("%H%M%S") + ".rar")
+        try:
+            shutil.move(str(rar_path), str(dest_path))
+            print(f"    📦 Исходный архив {rar_name} перемещен в _DONE_/")
+        except Exception as e:
+            print(f"    ⚠️ Не удалось переместить архив {rar_name}: {e}")
+
+
 def is_already_done(folder: Path) -> bool:
     """Проверяет, была ли папка уже успешно обработана ранее."""
     return (folder / DONE_MARKER).exists()
 
 
 def mark_as_done(folder: Path):
-    """Создаёт маркер-файл, чтобы не обрабатывать папку повторно."""
+    """Создаёт маркер-файл, чтобы не обрабатывать папку повторно, и переносит архив в _DONE_."""
     (folder / DONE_MARKER).write_text(
         f"Обработано: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
         encoding="utf-8",
     )
+    move_archive_to_done(folder)
 
 
 def move_to_manual_check(folder: Path, reason: str, base_dir: Path):
