@@ -23,6 +23,7 @@ app.secret_key = os.urandom(24)
 
 # Фильтр для парсинга JSON прямо в Jinja2-шаблонах
 app.jinja_env.filters["from_json"] = json.loads
+app.jinja_env.filters["basename"] = os.path.basename
 
 PROJECT_ROOT = Path(__file__).parent.parent
 

@@ -22,9 +22,25 @@ run_processes: dict[str, object] = {}      # run_id → subprocess.Popen
 conflict_responses: dict[int, Queue] = {}  # conflict_id → Queue('APPROVE'|'REJECT')
 
 
+class PipelineRunningError(Exception):
+    """Выбрасывается, если пайплайн уже запущен."""
+    pass
+
+
+def is_any_running() -> bool:
+    """Проверяет, есть ли активные процессы переименования."""
+    for rid, proc in list(run_processes.items()):
+        if proc.poll() is not None:  # Процесс уже завершился
+            run_processes.pop(rid, None)
+    return len(run_processes) > 0
+
+
 def start_run(target_dir: str, trigger: str = "manual") -> str:
     """Запустить пайплайн в фоновом потоке. Вернуть run_id."""
     import db
+
+    if is_any_running():
+        raise PipelineRunningError("Пайплайн уже выполняется. Пожалуйста, подождите завершения текущего запуска.")
 
     run_id = str(uuid.uuid4())
     q: Queue = Queue()
@@ -45,11 +61,11 @@ def _worker(run_id: str, target_dir: str):
     import db
 
     q = run_queues[run_id]
-    env = {**os.environ, "WEB_MODE": "1", "RUN_ID": run_id}
+    env = {**os.environ, "WEB_MODE": "1", "RUN_ID": run_id, "PYTHONUNBUFFERED": "1"}
 
     try:
         proc = subprocess.Popen(
-            [sys.executable, str(PROJECT_ROOT / "main.py"), target_dir],
+            [sys.executable, "-u", str(PROJECT_ROOT / "main.py"), target_dir],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
@@ -69,26 +85,17 @@ def _worker(run_id: str, target_dir: str):
                     data = json.loads(line[14:])
                     conflict_id = db.save_conflict(
                         run_id,
-                        data["folder"],
+                        data["folder_path"],  # Сохраняем полный путь в БД
                         data["files"],
                         data["suborders"],
                         data["mapping"],
                     )
                     q.put(
-                        f"⏸ КОНФЛИКТ #{conflict_id}: {data['folder']} — "
-                        f"ожидает решения оператора"
+                        f"⏸ КОНФЛИКТ #{conflict_id}: {data['folder_name']} — "
+                        f"отложен для решения в веб-интерфейсе"
                     )
-                    resp_q: Queue = Queue()
-                    conflict_responses[conflict_id] = resp_q
-                    # Блокируем поток до ответа оператора (макс. 1 час)
-                    response = resp_q.get(timeout=3600)
-                    proc.stdin.write(f"{response}\n")
-                    proc.stdin.flush()
-                    q.put(f"→ Конфликт #{conflict_id}: {response}")
                 except Exception as exc:
-                    q.put(f"❌ Ошибка обработки конфликта: {exc}")
-                    proc.stdin.write("REJECT\n")
-                    proc.stdin.flush()
+                    q.put(f"❌ Ошибка сохранения конфликта: {exc}")
                 continue
 
             # ── Парсинг переименований для БД ───────────────────────────
@@ -163,9 +170,57 @@ def stream_run(run_id: str):
 def resolve_conflict(conflict_id: int, action: str):
     """Вызывается Flask-роутом когда оператор нажимает кнопку."""
     import db
+    import shutil
+    from datetime import datetime
+    from pathlib import Path
+
+    conflict = db.get_conflict(conflict_id)
+    if not conflict or conflict["status"] != "pending":
+        return
+
+    folder_path = Path(conflict["folder_name"])
+    run_id = conflict["run_id"]
+
+    if action == "approve":
+        mapping = json.loads(conflict["mapping_json"])
+        # Переименовываем файлы по сохраненному маппингу
+        for orig_name, sub_id, new_name in mapping:
+            old_file = folder_path / orig_name
+            new_file = folder_path / new_name
+            if old_file.exists():
+                os.rename(str(old_file), str(new_file))
+                
+            # Пишем в лог-файлы и БД
+            db.log_rename(run_id, folder_path.name, orig_name, new_name, "site")
+            with open(str(PROJECT_ROOT / "rename_log.txt"), "a", encoding="utf-8") as log_file:
+                log_file.write(f"[{folder_path.name}] {orig_name} -> {new_name}\n")
+                
+        # Помечаем папку как обработанную
+        done_marker = folder_path / ".done"
+        done_marker.write_text(
+            f"Обработано оператором через веб-интерфейс: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
+            encoding="utf-8",
+        )
+    elif action == "reject":
+        # Переносим в ручную проверку
+        dest_dir = folder_path.parent / "_REQUIRES_MANUAL_CHECK_"
+        dest_dir.mkdir(exist_ok=True)
+        dest_folder = dest_dir / folder_path.name
+        if dest_folder.exists():
+            dest_folder = dest_dir / (folder_path.name + "_" + datetime.now().strftime("%H%M%S"))
+        
+        if folder_path.exists():
+            shutil.move(str(folder_path), str(dest_folder))
+            
+        reason_file = dest_folder / "_PROBLEM.txt"
+        reason_file.write_text(
+            f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"Папка: {folder_path.name}\n"
+            f"Причина: Отклонено оператором в веб-интерфейсе\n",
+            encoding="utf-8",
+        )
+        
+        with open(str(PROJECT_ROOT / "rename_log.txt"), "a", encoding="utf-8") as log_file:
+            log_file.write(f"[ALERT] [{folder_path.name}] -> _REQUIRES_MANUAL_CHECK_/ | Отклонено оператором\n")
 
     db.resolve_conflict(conflict_id, action)
-    resp_q = conflict_responses.get(conflict_id)
-    if resp_q:
-        resp_q.put("APPROVE" if action == "approve" else "REJECT")
-        conflict_responses.pop(conflict_id, None)

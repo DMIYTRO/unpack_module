@@ -114,14 +114,12 @@ def process_archives(target_dir: str):
                         return int(m.group()) if m else x.name
 
                     files_sorted = sorted(files, key=sort_key)
-                    # Создаем маппинг только для тех файлов и подзаказов, которые можно сопоставить
-                    mapping = list(zip(files_sorted, suborders))
-
-                    max_name_len = max((len(f.name) for f, _ in mapping), default=30)
-                    max_name_len = min(max(max_name_len, 30), 60) # ширина от 30 до 60 символов
-
-                    print("\n    ┌─ ПРЕДПРОСМОТР ПРИВЯЗКИ ────────────────────────────────")
-                    for i, (file_obj, sub_id) in enumerate(mapping):
+                    # Создаем маппинг: (file_obj, sub_id, new_name)
+                    mapping_full = []
+                    for i, file_obj in enumerate(files_sorted):
+                        if i >= len(suborders):
+                            break
+                        sub_id = suborders[i]
                         base_name = folder.name.replace(order_number, sub_id)
                         if re.search(r"([_-]?)\d*-?(face|back)", base_name, flags=re.IGNORECASE):
                             new_name = re.sub(
@@ -132,67 +130,68 @@ def process_archives(target_dir: str):
                             ) + file_obj.suffix
                         else:
                             new_name = f"{base_name}_{i+1}{file_obj.suffix}"
-                        
-                        # Обрезаем имя файла в выводе, если оно длиннее max_name_len
+                        mapping_full.append((file_obj, sub_id, new_name))
+
+                    max_name_len = max((len(item[0].name) for item in mapping_full), default=30)
+                    max_name_len = min(max(max_name_len, 30), 60) # ширина от 30 до 60 символов
+
+                    print("\n    ┌─ ПРЕДПРОСМОТР ПРИВЯЗКИ ────────────────────────────────")
+                    for i, (file_obj, sub_id, new_name) in enumerate(mapping_full):
                         display_name = file_obj.name
                         if len(display_name) > max_name_len:
                             display_name = display_name[:max_name_len-3] + "..."
-                            
                         print(f"    │  {i+1:2d}. {display_name:<{max_name_len}}  →  {new_name}")
                         
                     if len(suborders) != len(files):
                         print(f"    │  🚨 ВНИМАНИЕ: Файлов {len(files)}, а подзаказов {len(suborders)}!")
                     print("    └────────────────────────────────────────────────────────")
 
-                    # Если количество совпало, переименовываем без вопросов.
-                    # Если не совпало, кидаем конфликт или спрашиваем подтверждение.
                     if len(suborders) == len(files):
-                        answer = "y"
+                        # Полное совпадение — переименовываем сразу без вопросов
+                        print("    -> Переименовываем...")
+                        for file_obj, sub_id, new_name in mapping_full:
+                            new_path = folder / new_name
+                            display_name = file_obj.name
+                            if len(display_name) > max_name_len:
+                                display_name = display_name[:max_name_len-3] + "..."
+                            print(f"    [SITE] {display_name:<{max_name_len}}  →  {new_name}")
+                            os.rename(str(file_obj), str(new_path))
+                            with open("rename_log.txt", "a", encoding="utf-8") as log_file:
+                                log_file.write(f"[{folder.name}] {file_obj.name} -> {new_name}\n")
+                        mark_as_done(folder)
                     else:
+                        # Несовпадение — конфликт!
                         if WEB_MODE:
                             conflict_data = {
-                                "folder": folder.name,
+                                "folder_path": str(folder.resolve()),
+                                "folder_name": folder.name,
                                 "files":  [f.name for f in files_sorted],
                                 "suborders": suborders,
-                                "mapping": [[f.name, sub_id] for f, sub_id in mapping],
+                                "mapping": [[f.name, sub_id, new_n] for f, sub_id, new_n in mapping_full],
                             }
                             print(f"CONFLICT_DATA:{json.dumps(conflict_data)}", flush=True)
-                            response = sys.stdin.readline().strip()  # APPROVE или REJECT
-                            answer = "y" if response == "APPROVE" else "n"
+                            print(f"    ⏸ Конфликт сохранен в веб-интерфейсе. Папка отложена.")
+                            continue
                         else:
+                            # Консольный режим
                             answer = input("\n    Количество не совпадает! Всё равно переименовать сопоставленные? [y/n]: ").strip().lower()
-
-                    if answer != "y":
-                        reason = f"Отклонено оператором (файлов: {len(files)}, подзаказов: {len(suborders)})"
-                        print(f"    ⏭ Пропуск. Папка перемещена на ручную проверку.")
-                        move_to_manual_check(folder, reason, target_path)
-                        continue
-
-                    # Переименовываем после подтверждения
-                    print("    -> Переименовываем...")
-                    for i, (file_obj, sub_id) in enumerate(mapping):
-                        base_name = folder.name.replace(order_number, sub_id)
-                        if re.search(r"([_-]?)\d*-?(face|back)", base_name, flags=re.IGNORECASE):
-                            new_name = re.sub(
-                                r"([_-]?)\d*-?(face|back)",
-                                rf"\g<1>{i+1}-\g<2>",
-                                base_name,
-                                flags=re.IGNORECASE,
-                            ) + file_obj.suffix
-                        else:
-                            new_name = f"{base_name}_{i+1}{file_obj.suffix}"
-
-                        new_path = folder / new_name
-                        display_name = file_obj.name
-                        if len(display_name) > max_name_len:
-                            display_name = display_name[:max_name_len-3] + "..."
-                        print(f"    [SITE] {display_name:<{max_name_len}}  →  {new_name}")
-                        os.rename(str(file_obj), str(new_path))
-
-                        with open("rename_log.txt", "a", encoding="utf-8") as log_file:
-                            log_file.write(f"[{folder.name}] {file_obj.name} -> {new_name}\n")
-
-                    mark_as_done(folder)
+                            if answer == "y":
+                                print("    -> Переименовываем...")
+                                for file_obj, sub_id, new_name in mapping_full:
+                                    new_path = folder / new_name
+                                    display_name = file_obj.name
+                                    if len(display_name) > max_name_len:
+                                        display_name = display_name[:max_name_len-3] + "..."
+                                    print(f"    [SITE] {display_name:<{max_name_len}}  →  {new_name}")
+                                    os.rename(str(file_obj), str(new_path))
+                                    with open("rename_log.txt", "a", encoding="utf-8") as log_file:
+                                        log_file.write(f"[{folder.name}] {file_obj.name} -> {new_name}\n")
+                                mark_as_done(folder)
+                            else:
+                                reason = f"Отклонено оператором (файлов: {len(files)}, подзаказов: {len(suborders)})"
+                                print(f"    ⏭ Пропуск. Папка перемещена на ручную проверку.")
+                                move_to_manual_check(folder, reason, target_path)
+                                continue
 
                 except Exception as e:
                     print(f"    ❌ [ОШИБКА] Сбой при работе с сайтом: {e}")
