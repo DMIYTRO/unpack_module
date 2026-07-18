@@ -35,7 +35,7 @@ def is_any_running() -> bool:
     return len(run_processes) > 0
 
 
-def start_run(target_dir: str, trigger: str = "manual") -> str:
+def start_run(source_dir: str, output_dir: str | None = None, trigger: str = "manual") -> str:
     """Запустить пайплайн в фоновом потоке. Вернуть run_id."""
     import db
 
@@ -49,14 +49,14 @@ def start_run(target_dir: str, trigger: str = "manual") -> str:
 
     threading.Thread(
         target=_worker,
-        args=(run_id, target_dir),
+        args=(run_id, source_dir, output_dir or source_dir),
         daemon=True,
     ).start()
 
     return run_id
 
 
-def _worker(run_id: str, target_dir: str):
+def _worker(run_id: str, source_dir: str, output_dir: str):
     """Фоновый поток: запускает main.py, читает stdout, обрабатывает конфликты."""
     import db
 
@@ -65,7 +65,7 @@ def _worker(run_id: str, target_dir: str):
 
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-u", str(PROJECT_ROOT / "main.py"), target_dir],
+            [sys.executable, "-u", str(PROJECT_ROOT / "main.py"), source_dir, output_dir],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,
@@ -89,6 +89,7 @@ def _worker(run_id: str, target_dir: str):
                         data["files"],
                         data["suborders"],
                         data["mapping"],
+                        data.get("archive_dir"),
                     )
                     q.put(
                         f"⏸ КОНФЛИКТ #{conflict_id}: {data['folder_name']} — "
@@ -167,7 +168,52 @@ def stream_run(run_id: str):
 
 # ── Conflict resolution ──────────────────────────────────────────────────────
 
-def resolve_conflict(conflict_id: int, action: str):
+def _safe_relative_path(value: str) -> Path:
+    """Проверяет, что путь остаётся внутри папки заказа."""
+    path = Path(value)
+    if not value or path.is_absolute() or ".." in path.parts:
+        raise ValueError("Недопустимый путь к файлу")
+    return path
+
+
+def build_manual_mapping(conflict_id: int, sources: list[str], new_names: list[str]) -> list[list[str]]:
+    """Проверяет ручные имена и строит безопасную карту переименования."""
+    import db
+
+    conflict = db.get_conflict(conflict_id)
+    if not conflict or conflict["status"] != "pending":
+        raise ValueError("Конфликт уже обработан или не найден")
+    if len(sources) != len(new_names):
+        raise ValueError("Не удалось прочитать все строки переименования")
+
+    allowed_sources = set(json.loads(conflict["files_json"]))
+    if set(sources) != allowed_sources or len(set(sources)) != len(sources):
+        raise ValueError("Список файлов был изменён. Обновите страницу и повторите попытку")
+
+    root = Path(conflict["folder_name"]).resolve()
+    destinations = set()
+    mapping = []
+    for source_text, new_name in zip(sources, new_names):
+        source_rel = _safe_relative_path(source_text)
+        clean_name = new_name.strip()
+        if not clean_name or Path(clean_name).name != clean_name or clean_name in {".", ".."}:
+            raise ValueError(f"Для файла {source_text} укажите только новое имя файла, без пути")
+
+        source = (root / source_rel).resolve()
+        if root not in source.parents or not source.is_file():
+            raise ValueError(f"Исходный файл не найден: {source_text}")
+        destination = source.with_name(clean_name)
+        if destination in destinations:
+            raise ValueError(f"Два файла получают одно имя: {clean_name}")
+        if destination.exists() and destination != source:
+            raise ValueError(f"Файл с именем {clean_name} уже существует рядом с {source_text}")
+        destinations.add(destination)
+        mapping.append([str(source_rel), "manual", str(destination.relative_to(root))])
+
+    return mapping
+
+
+def resolve_conflict(conflict_id: int, action: str, mapping: list[list[str]] | None = None):
     """Вызывается Flask-роутом когда оператор нажимает кнопку."""
     import db
     import shutil
@@ -182,7 +228,7 @@ def resolve_conflict(conflict_id: int, action: str):
     run_id = conflict["run_id"]
 
     if action == "approve":
-        mapping = json.loads(conflict["mapping_json"])
+        mapping = mapping if mapping is not None else json.loads(conflict["mapping_json"])
         # Переименовываем файлы по сохраненному маппингу
         for orig_name, sub_id, new_name in mapping:
             old_file = folder_path / orig_name
@@ -206,7 +252,8 @@ def resolve_conflict(conflict_id: int, action: str):
         try:
             sys.path.insert(0, str(PROJECT_ROOT))
             from main import move_archive_to_done
-            move_archive_to_done(folder_path)
+            archive_dir = conflict.get("archive_dir") or str(folder_path.parent)
+            move_archive_to_done(folder_path, Path(archive_dir))
         except Exception as e:
             print(f"Ошибка при переносе архива в resolve_conflict: {e}")
     elif action == "reject":

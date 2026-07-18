@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
-from classifier import classify_face_back
+from classifier import classify_face_back_paths
+from file_discovery import list_layout_files
 
 def generate_new_names(folder_name: str, classified_files: dict) -> dict:
     """
@@ -44,35 +45,38 @@ def rename_files_in_folder(folder_path: str):
         return
         
     folder_name = path.name
-    files = [f.name for f in path.iterdir() if f.is_file() and not f.name.startswith('.')]
+    files = list_layout_files(path)
     
     if not files:
         print(f"Папка {folder_name} пуста.")
         return
         
     # Шаг 1. Определяем, где лицо, а где оборот
-    classified = classify_face_back(files)
+    classified = classify_face_back_paths(files)
     
     # Шаг 2. Генерируем новые имена
     new_names = generate_new_names(folder_name, classified)
     
     # Шаг 3. Переименовываем
     print(f"\n--- Переименование в папке: {folder_name} ---")
-    for side, original_name in classified.items():
-        if original_name and original_name in files:
+    for side, old_path in classified.items():
+        if old_path and old_path in files:
             new_name = new_names.get(side)
             if new_name:
-                old_path = path / original_name
-                new_path = path / new_name
+                # Имя строится от корневой папки заказа, но файл остаётся
+                # в своей подпапке.
+                new_path = old_path.with_name(new_name)
+                original_name = str(old_path.relative_to(path))
+                display_new_name = str(new_path.relative_to(path))
                 
-                print(f"[{side.upper()}] {original_name}  --->  {new_name}")
+                print(f"[{side.upper()}] {original_name}  --->  {display_new_name}")
                 
                 # Фактическое переименование файла:
                 os.rename(old_path, new_path)
                 
                 # Запись в лог
                 with open("rename_log.txt", "a", encoding="utf-8") as log_file:
-                    log_file.write(f"[{folder_name}] {original_name} -> {new_name}\n")
+                    log_file.write(f"[{folder_name}] {original_name} -> {display_new_name}\n")
 
 if __name__ == "__main__":
     # Тестируем на нашей 4-4 папке

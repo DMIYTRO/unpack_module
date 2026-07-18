@@ -24,27 +24,34 @@
   </div>
 </div>
 
-<!-- Mapping table -->
+<form action="/conflicts/{{ conflict.id }}/approve" method="POST">
 <div class="card mb-6">
-  <div class="card-title">Предложенная привязка — проверьте!</div>
+  <div class="card-title">Назначьте имена и проверьте макеты</div>
+  <div class="text-muted mb-4">Новое имя применяется в текущей подпапке. Поле можно изменить вручную.</div>
   <table>
     <thead>
       <tr>
         <th>#</th>
+        <th>Превью</th>
         <th>Файл в архиве (Оригинал)</th>
-        <th></th>
-        <th>Новое имя (Подзаказ)</th>
+        <th>Новое имя</th>
       </tr>
     </thead>
     <tbody>
-      {% for orig_name, sub_id, new_name in conflict.mapping %}
+      {% for row in conflict.rows %}
       <tr>
         <td style="color:var(--muted);width:40px;">{{ loop.index }}</td>
-        <td class="mono" style="color:var(--orange);">{{ orig_name }}</td>
-        <td style="color:var(--muted);text-align:center;">→</td>
-        <td class="mono">
-          <span style="color:var(--green);">{{ new_name }}</span>
-          <span style="color:var(--muted); font-size:11px; margin-left:8px;">(Подзаказ: {{ sub_id }})</span>
+        <td style="width:150px;">
+          {% if row.is_pdf %}
+            <iframe class="file-preview" src="{{ url_for('conflict_preview', conflict_id=conflict.id, relative_path=row.source) }}#view=FitH" title="{{ row.source }}"></iframe>
+          {% else %}
+            <img class="file-preview" src="{{ url_for('conflict_preview', conflict_id=conflict.id, relative_path=row.source) }}" alt="Превью {{ row.source }}">
+          {% endif %}
+        </td>
+        <td class="mono" style="color:var(--orange);word-break:break-all;">{{ row.source }}<input type="hidden" name="source" value="{{ row.source }}"></td>
+        <td>
+          <input class="input mono" style="width:100%;min-width:260px;" name="new_name" value="{{ row.new_name }}" placeholder="Введите новое имя файла" required>
+          {% if row.suborder %}<div class="text-muted" style="margin-top:6px;font-size:11px;">Предложенный подзаказ: {{ row.suborder }}</div>{% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -54,15 +61,25 @@
 
 <!-- Action buttons -->
 <div class="flex gap-3">
-  <form action="/conflicts/{{ conflict.id }}/approve" method="POST" style="flex:1;">
+  <div style="flex:1;">
     <button type="submit" class="btn btn-success" style="width:100%;padding:14px;font-size:15px;justify-content:center;">
-      ✅ Подтвердить привязку — Переименовать
+      ✅ Применить заданные имена
     </button>
-  </form>
+</div>
+</div>
+</form>
+
+<div class="flex gap-3">
   <form action="/conflicts/{{ conflict.id }}/reject" method="POST" style="flex:1;">
     <button type="submit" class="btn btn-danger" style="width:100%;padding:14px;font-size:15px;justify-content:center;">
       ❌ Отклонить — Отправить на ручную проверку
     </button>
   </form>
 </div>
+{% endblock %}
+
+{% block head %}
+<style>
+  .file-preview { width:130px; height:94px; border:1px solid var(--border); border-radius:6px; background:#fff; object-fit:contain; }
+</style>
 {% endblock %}

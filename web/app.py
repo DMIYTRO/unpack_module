@@ -5,10 +5,14 @@ app.py — Flask веб-интерфейс для unpack_module
 import sys
 import os
 import json
+import hashlib
+import subprocess
+import tempfile
+import shutil
 from pathlib import Path
 from flask import (
     Flask, render_template, request, redirect,
-    url_for, Response, jsonify, flash,
+    url_for, Response, jsonify, flash, send_file, abort,
 )
 
 # Добавляем корень проекта в путь чтобы импортировать db, pipeline_runner
@@ -26,6 +30,7 @@ app.jinja_env.filters["from_json"] = json.loads
 app.jinja_env.filters["basename"] = os.path.basename
 
 PROJECT_ROOT = Path(__file__).parent.parent
+PREVIEW_CACHE_DIR = Path(tempfile.gettempdir()) / "unpack_module_previews"
 
 
 @app.before_request
@@ -41,6 +46,7 @@ def dashboard():
     stats = db.get_stats()
     recent_runs = db.get_recent_runs(6)
     pending = db.get_pending_conflicts()
+    config = db.get_schedule()
     is_running = pipeline_runner.is_any_running()
     return render_template(
         "dashboard.html",
@@ -49,14 +55,16 @@ def dashboard():
         pending_conflicts=pending,
         active_run_id=run_id,
         is_running=is_running,
+        config=config,
     )
 
 
 @app.route("/run", methods=["POST"])
 def run_pipeline():
-    target_dir = request.form.get("target_dir", "original_archives").strip()
+    source_dir = request.form.get("source_dir", "original_archives").strip()
+    output_dir = request.form.get("output_dir", "").strip() or source_dir
     try:
-        run_id = pipeline_runner.start_run(target_dir, trigger="manual")
+        run_id = pipeline_runner.start_run(source_dir, output_dir, trigger="manual")
         return redirect(url_for("dashboard") + f"?run_id={run_id}")
     except pipeline_runner.PipelineRunningError as e:
         flash(str(e), "error")
@@ -119,12 +127,53 @@ def conflict_detail(conflict_id):
     conflict["files"] = json.loads(conflict["files_json"])
     conflict["suborders"] = json.loads(conflict["suborders_json"])
     conflict["mapping"] = json.loads(conflict["mapping_json"])
+
+    # Старые конфликты могли быть сохранены до группировки face/back. Если
+    # количество файлов ровно соответствует сторонности, пересобираем только
+    # предложение для интерфейса — оператор всё равно подтверждает его вручную.
+    try:
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+        from main import build_site_mapping
+
+        folder = Path(conflict["folder_name"])
+        rebuilt, per_suborder = build_site_mapping(
+            folder,
+            [folder / source for source in conflict["files"]],
+            conflict["suborders"],
+        )
+        if len(rebuilt) == len(conflict["files"]) == len(conflict["suborders"]) * per_suborder:
+            conflict["mapping"] = [
+                [str(source.relative_to(folder)), suborder, new_name]
+                for source, suborder, new_name in rebuilt
+            ]
+    except (ValueError, ImportError):
+        pass
+
+    proposed = {item[0]: item[1:] for item in conflict["mapping"]}
+    conflict["rows"] = [
+        {
+            "source": source,
+            "suborder": proposed.get(source, [""])[0],
+            # Сохраняем подпапку, но оператор редактирует только имя файла.
+            "new_name": Path(proposed[source][1]).name if source in proposed else "",
+            "is_pdf": source.lower().endswith(".pdf"),
+        }
+        for source in conflict["files"]
+    ]
     return render_template("conflict_detail.html", conflict=conflict)
 
 
 @app.route("/conflicts/<int:conflict_id>/approve", methods=["POST"])
 def approve_conflict(conflict_id):
-    pipeline_runner.resolve_conflict(conflict_id, "approve")
+    sources = request.form.getlist("source")
+    names = request.form.getlist("new_name")
+    try:
+        mapping = pipeline_runner.build_manual_mapping(conflict_id, sources, names)
+        pipeline_runner.resolve_conflict(conflict_id, "approve", mapping)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("conflict_detail", conflict_id=conflict_id))
     return redirect(url_for("conflicts"))
 
 
@@ -132,6 +181,71 @@ def approve_conflict(conflict_id):
 def reject_conflict(conflict_id):
     pipeline_runner.resolve_conflict(conflict_id, "reject")
     return redirect(url_for("conflicts"))
+
+
+@app.route("/conflicts/<int:conflict_id>/preview/<path:relative_path>")
+def conflict_preview(conflict_id, relative_path):
+    """Безопасно отдаёт оригинал или PNG-превью файла из ожидающего конфликта."""
+    conflict = db.get_conflict(conflict_id)
+    if not conflict or conflict["status"] != "pending":
+        abort(404)
+
+    allowed_files = set(json.loads(conflict["files_json"]))
+    if relative_path not in allowed_files:
+        abort(404)
+
+    root = Path(conflict["folder_name"]).resolve()
+    source = (root / relative_path).resolve()
+    if root not in source.parents or not source.is_file():
+        abort(404)
+
+    # Современные браузеры показывают эти форматы напрямую.
+    if source.suffix.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf"}:
+        return send_file(source, conditional=True)
+
+    # TIFF, Photoshop, Illustrator и CorelDRAW обычно не открываются в браузере.
+    # Создаём PNG-копию для просмотра, не изменяя исходный макет.
+    if source.suffix.lower() in {".tif", ".tiff", ".psd", ".ai", ".cdr"}:
+        PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = f"{source}:{source.stat().st_mtime_ns}:{source.stat().st_size}".encode()
+        preview = PREVIEW_CACHE_DIR / f"{hashlib.sha256(stamp).hexdigest()}.png"
+        if not preview.exists():
+            try:
+                subprocess.run(
+                    ["sips", "--setProperty", "format", "png", str(source), "--out", str(preview)],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=30,
+                )
+            except (FileNotFoundError, subprocess.SubprocessError):
+                # Для CDR и части AI-файлов sips может не иметь декодера.
+                # Пробуем системный Quick Look, если для формата установлен плагин.
+                quicklook_dir = PREVIEW_CACHE_DIR / f"quicklook_{preview.stem}"
+                try:
+                    quicklook_dir.mkdir(exist_ok=True)
+                    subprocess.run(
+                        ["qlmanage", "-t", "-s", "800", "-o", str(quicklook_dir), str(source)],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        timeout=30,
+                    )
+                    generated = next(quicklook_dir.glob("*.png"), None)
+                    if not generated:
+                        raise FileNotFoundError("Quick Look не создал PNG")
+                    shutil.move(str(generated), str(preview))
+                except (FileNotFoundError, subprocess.SubprocessError):
+                    abort(
+                        415,
+                        "Система не умеет создать превью этого файла. "
+                        "Для CDR установите Quick Look-плагин CorelDRAW или экспортируйте PDF.",
+                    )
+                finally:
+                    shutil.rmtree(quicklook_dir, ignore_errors=True)
+        return send_file(preview, mimetype="image/png", conditional=True)
+
+    abort(415, "Предпросмотр доступен для PDF, JPG, TIFF, PSD, AI, CDR, PNG, GIF и WebP")
 
 
 # ── Расписание ───────────────────────────────────────────────────────────────
@@ -148,8 +262,13 @@ def save_schedule():
     cron_expr = request.form.get("cron_expression", "").strip()
     enabled = request.form.get("enabled") == "on"
     target_dir = request.form.get("target_dir", "original_archives").strip()
-    db.save_schedule(cron_expr, enabled, target_dir)
-    sched.update_schedule(cron_expr, enabled, target_dir)
+    output_dir = request.form.get("output_dir", "").strip() or target_dir
+    try:
+        sched.update_schedule(cron_expr, enabled, target_dir, output_dir)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("schedule"))
+    db.save_schedule(cron_expr, enabled, target_dir, output_dir)
     return redirect(url_for("schedule"))
 
 
@@ -167,9 +286,13 @@ if __name__ == "__main__":
     # Восстановить расписание из БД при старте
     config = db.get_schedule()
     if config.get("enabled"):
-        sched.update_schedule(
+        try:
+            sched.update_schedule(
             config["cron_expression"],
             True,
             config["target_dir"],
-        )
+            config.get("output_dir") or config["target_dir"],
+            )
+        except ValueError as exc:
+            print(f"Расписание отключено: {exc}")
     app.run(debug=False, port=5050, threaded=True, use_reloader=False)

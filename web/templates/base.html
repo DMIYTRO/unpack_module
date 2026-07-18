@@ -243,7 +243,16 @@
       </a>
     </div>
   </nav>
-  <main class="main">
+   <main class="main">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div style="background:rgba(247,94,94,.08);border:1px solid rgba(247,94,94,.25);border-radius:12px;padding:14px 20px;margin-bottom:24px;color:var(--red);">
+            ⚠️ {{ message }}
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
     {% block content %}{% endblock %}
   </main>
 </body>

@@ -4,6 +4,18 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
 
+
+class WebsiteParserError(RuntimeError):
+    """Базовая ошибка получения данных с сайта."""
+
+
+class SiteAccessError(WebsiteParserError):
+    """Сайт недоступен, авторизация не прошла или ответ нельзя загрузить."""
+
+
+class OrderDataError(WebsiteParserError):
+    """Страница получена, но её структура или данные заказа не распознаны."""
+
 def fetch_suborders(order_number: str) -> list[str]:
     """
     Авторизуется на сайте, загружает страницу заказа и возвращает 
@@ -14,10 +26,12 @@ def fetch_suborders(order_number: str) -> list[str]:
     ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 
     if not LOGIN_USER or not ADMIN_PASSWORD:
-        raise ValueError("В .env не заданы LOGIN_USER или ADMIN_PASSWORD")
+        raise SiteAccessError("В .env не заданы LOGIN_USER или ADMIN_PASSWORD")
+    if not order_number.isdigit():
+        raise OrderDataError(f"Некорректный номер заказа: {order_number!r}")
 
-    # Формируем URL с Basic Auth и фильтром по orderid
-    url = f"https://admin:{ADMIN_PASSWORD}@sborka.ua/adm/orders.php?type=all&datefrom=2026-06-17&datetill=2026-08-16&datefrom2=2026-06-17&datetill2=2026-08-16&client_id=&orderid={order_number}&manager=0&statuss=0&politics=0&pay=0&delivery=0&sborka_id=&button=ok"
+    # Пароль передаётся Playwright отдельно, поэтому не попадает в URL и логи.
+    url = f"https://sborka.ua/adm/orders.php?type=all&datefrom=2026-06-17&datetill=2026-08-16&datefrom2=2026-06-17&datetill2=2026-08-16&client_id=&orderid={order_number}&manager=0&statuss=0&politics=0&pay=0&delivery=0&sborka_id=&button=ok"
 
     print(f"[{order_number}] Подключение к сайту и поиск подзаказов...")
     
@@ -32,6 +46,7 @@ def fetch_suborders(order_number: str) -> list[str]:
             ],
         )
         context = browser.new_context(
+            http_credentials={"username": "admin", "password": ADMIN_PASSWORD},
             viewport={"width": 1920, "height": 1080},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         )
@@ -55,9 +70,10 @@ def fetch_suborders(order_number: str) -> list[str]:
             suborders = parse_suborders_from_html(html_content, order_number)
             return sorted(suborders)
 
+        except WebsiteParserError:
+            raise
         except Exception as e:
-            print(f"❌ Ошибка во время загрузки страницы: {e}")
-            return []
+            raise SiteAccessError(f"Ошибка во время загрузки страницы: {e}") from e
         finally:
             browser.close()
 
@@ -75,8 +91,7 @@ def parse_suborders_from_html(html_content: str, main_order_number: str) -> list
             break
 
     if not target_table:
-        print("❌ Таблица с заказами не найдена на странице.")
-        return []
+        raise OrderDataError("Таблица с заказами не найдена на странице")
 
     rows = target_table.find_all("tr")
 

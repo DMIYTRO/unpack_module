@@ -40,6 +40,7 @@ def init_db():
             files_json     TEXT NOT NULL,
             suborders_json TEXT NOT NULL,
             mapping_json   TEXT NOT NULL,
+            archive_dir    TEXT,
             status         TEXT DEFAULT 'pending'
         );
         CREATE TABLE IF NOT EXISTS schedule_config (
@@ -47,11 +48,19 @@ def init_db():
             cron_expression TEXT DEFAULT '',
             enabled         INTEGER DEFAULT 0,
             target_dir      TEXT DEFAULT 'original_archives',
+            output_dir      TEXT DEFAULT '',
             last_run        TEXT
         );
         INSERT OR IGNORE INTO schedule_config (id, cron_expression, enabled, target_dir)
         VALUES (1, '', 0, 'original_archives');
     """)
+    # Мягкая миграция для уже существующей history.db.
+    conflict_columns = {row[1] for row in conn.execute("PRAGMA table_info(conflicts)")}
+    if "archive_dir" not in conflict_columns:
+        conn.execute("ALTER TABLE conflicts ADD COLUMN archive_dir TEXT")
+    schedule_columns = {row[1] for row in conn.execute("PRAGMA table_info(schedule_config)")}
+    if "output_dir" not in schedule_columns:
+        conn.execute("ALTER TABLE schedule_config ADD COLUMN output_dir TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -119,11 +128,11 @@ def get_rename_history(limit=300, search=None, date_from=None):
 
 # ── Conflicts ───────────────────────────────────────────────────────────────
 
-def save_conflict(run_id, folder_name, files, suborders, mapping):
+def save_conflict(run_id, folder_name, files, suborders, mapping, archive_dir=None):
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO conflicts (run_id, timestamp, folder_name, files_json, suborders_json, mapping_json) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO conflicts (run_id, timestamp, folder_name, files_json, suborders_json, mapping_json, archive_dir) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             run_id,
             datetime.now().isoformat(),
@@ -131,6 +140,7 @@ def save_conflict(run_id, folder_name, files, suborders, mapping):
             json.dumps(files),
             json.dumps(suborders),
             json.dumps(mapping),
+            archive_dir,
         ),
     )
     conflict_id = cur.lastrowid
@@ -195,11 +205,11 @@ def get_schedule():
     return dict(row) if row else {}
 
 
-def save_schedule(cron_expression, enabled, target_dir):
+def save_schedule(cron_expression, enabled, target_dir, output_dir):
     conn = get_db()
     conn.execute(
-        "UPDATE schedule_config SET cron_expression=?, enabled=?, target_dir=?, last_run=last_run WHERE id=1",
-        (cron_expression, 1 if enabled else 0, target_dir),
+        "UPDATE schedule_config SET cron_expression=?, enabled=?, target_dir=?, output_dir=?, last_run=last_run WHERE id=1",
+        (cron_expression, 1 if enabled else 0, target_dir, output_dir),
     )
     conn.commit()
     conn.close()

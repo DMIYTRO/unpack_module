@@ -43,6 +43,39 @@ def classify_face_back(filenames: list) -> dict:
         
     return result
 
+
+def classify_face_back_paths(files: list[Path]) -> dict:
+    """Версия классификатора для файлов из подпапок.
+
+    Сторона определяется по имени самого файла, а не по имени подпапки.
+    Возвращаются объекты Path, поэтому одинаковые имена в разных подпапках
+    не смешиваются.
+    """
+    face_patterns = [r'лиц[ое]', r'^1$', r'face', r'front']
+    back_patterns = [r'зворот', r'оборот', r'^2$', r'back', r'rear']
+    result = {'face': None, 'back': None}
+
+    for file_path in files:
+        name_without_ext = file_path.stem.lower()
+        is_face = any(re.search(pattern, name_without_ext) for pattern in face_patterns)
+        is_back = any(re.search(pattern, name_without_ext) for pattern in back_patterns)
+        if is_face and not is_back:
+            result['face'] = file_path
+        elif is_back and not is_face:
+            result['back'] = file_path
+
+    if result['face'] and not result['back']:
+        result['back'] = next((item for item in files if item != result['face']), None)
+    elif result['back'] and not result['face']:
+        result['face'] = next((item for item in files if item != result['back']), None)
+    elif not result['face'] and not result['back'] and len(files) == 2:
+        sorted_files = sorted(files, key=lambda item: str(item).casefold())
+        result['face'], result['back'] = sorted_files
+    elif not result['face'] and not result['back'] and len(files) == 1:
+        result['face'] = files[0]
+
+    return result
+
 if __name__ == "__main__":
     # Тест на реальной папке с 4-4
     test_dir = Path("test_archives/04_NP_Glam11_350_mel_(90x50)_4-4_T100_(17618-25516399)_offset-face")

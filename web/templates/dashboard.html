@@ -37,10 +37,22 @@
 <div class="card mb-6">
   <div class="card-title">Запуск обработки</div>
   <form action="/run" method="POST" id="run-form">
+    <div class="flex gap-3" style="margin-bottom:12px;">
+      <div style="flex:1;">
+        <label class="text-muted" style="display:block;margin-bottom:6px;">Исходная папка с RAR-архивами</label>
+        <input class="input" style="width:100%;" type="text" name="source_dir"
+               value="{{ config.target_dir or 'original_archives' }}" placeholder="/путь/к/входящим"
+               {% if is_running %}disabled{% endif %}>
+      </div>
+      <div style="flex:1;">
+        <label class="text-muted" style="display:block;margin-bottom:6px;">Финальная папка обработанных файлов</label>
+        <input class="input" style="width:100%;" type="text" name="output_dir"
+               value="{{ config.output_dir or config.target_dir or 'original_archives' }}" placeholder="/путь/к/готовым"
+               {% if is_running %}disabled{% endif %}>
+      </div>
+    </div>
     <div class="flex gap-3 items-center">
-      <input class="input" style="flex:1;" type="text" name="target_dir"
-             value="original_archives" placeholder="Папка с архивами"
-             {% if is_running %}disabled{% endif %}>
+      <div class="text-muted" style="flex:1;font-size:12px;">Готовые папки создаются только в финальной директории. После успеха архив переносится во входящую папку <span class="mono">_DONE_</span>.</div>
       <button type="submit" class="btn btn-primary" id="run-btn"
               {% if is_running %}disabled style="background:var(--muted);box-shadow:none;cursor:not-allowed;"{% endif %}>
         {% if is_running %}

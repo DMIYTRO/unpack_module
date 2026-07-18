@@ -1,12 +1,10 @@
-import os
 from pathlib import Path
-import re
+from filename_parser import parse_filename
+from file_discovery import list_layout_files
 
-def parse_sides_from_foldername(foldername: str) -> str:
-    """Извлекает сторонность из имени папки (копия логики из парсера)."""
-    # Ищем любую комбинацию цифр с дефисом, например 4-0, 4-4, 1-0, 4-2
-    match = re.search(r'\d-\d', foldername)
-    return match.group(0) if match else None
+def parse_sides_from_foldername(foldername: str) -> str | None:
+    """Извлекает сторонность тем же строгим парсером, что и номер заказа."""
+    return parse_filename(foldername)["sides"]
 
 def validate_folder(folder_path: str) -> str:
     """
@@ -21,8 +19,8 @@ def validate_folder(folder_path: str) -> str:
     if not sides_str:
         return "bad: unknown format (no X-X in name)"
         
-    # Считаем только файлы (исключаем .DS_Store и подпапки)
-    files = [f for f in path.iterdir() if f.is_file() and not f.name.startswith('.')]
+    # Считаем макеты в самой папке заказа и во всех вложенных папках.
+    files = list_layout_files(path)
     file_count = len(files)
     
     # Определяем, сколько сторон заявлено
