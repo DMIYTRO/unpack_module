@@ -117,6 +117,9 @@ def process_archives(target_dir: str):
                     # Создаем маппинг только для тех файлов и подзаказов, которые можно сопоставить
                     mapping = list(zip(files_sorted, suborders))
 
+                    max_name_len = max((len(f.name) for f, _ in mapping), default=30)
+                    max_name_len = min(max(max_name_len, 30), 60) # ширина от 30 до 60 символов
+
                     print("\n    ┌─ ПРЕДПРОСМОТР ПРИВЯЗКИ ────────────────────────────────")
                     for i, (file_obj, sub_id) in enumerate(mapping):
                         base_name = folder.name.replace(order_number, sub_id)
@@ -129,7 +132,13 @@ def process_archives(target_dir: str):
                             ) + file_obj.suffix
                         else:
                             new_name = f"{base_name}_{i+1}{file_obj.suffix}"
-                        print(f"    │  {i+1}. {file_obj.name:30s}  ->  {new_name}")
+                        
+                        # Обрезаем имя файла в выводе, если оно длиннее max_name_len
+                        display_name = file_obj.name
+                        if len(display_name) > max_name_len:
+                            display_name = display_name[:max_name_len-3] + "..."
+                            
+                        print(f"    │  {i+1:2d}. {display_name:<{max_name_len}}  →  {new_name}")
                         
                     if len(suborders) != len(files):
                         print(f"    │  🚨 ВНИМАНИЕ: Файлов {len(files)}, а подзаказов {len(suborders)}!")
@@ -174,7 +183,10 @@ def process_archives(target_dir: str):
                             new_name = f"{base_name}_{i+1}{file_obj.suffix}"
 
                         new_path = folder / new_name
-                        print(f"    [SITE] {file_obj.name}  --->  {new_name}")
+                        display_name = file_obj.name
+                        if len(display_name) > max_name_len:
+                            display_name = display_name[:max_name_len-3] + "..."
+                        print(f"    [SITE] {display_name:<{max_name_len}}  →  {new_name}")
                         os.rename(str(file_obj), str(new_path))
 
                         with open("rename_log.txt", "a", encoding="utf-8") as log_file:
