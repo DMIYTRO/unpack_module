@@ -105,26 +105,16 @@ def process_archives(target_dir: str):
 
                     files = [f for f in folder.iterdir() if f.is_file() and not f.name.startswith(".")]
 
-                    # ✅ ИСПРАВЛЕНИЕ 3: При несовпадении — перемещаем в MANUAL_CHECK
-                    if len(suborders) != len(files):
-                        reason = (
-                            f"Файлов в архиве: {len(files)}, "
-                            f"подзаказов на сайте: {len(suborders)}"
-                        )
-                        print(f"    🚨 [АЛЕРТ] {reason}")
-                        move_to_manual_check(folder, reason, target_path)
-                        continue
-
-                    # ✅ ИСПРАВЛЕНИЕ 2: Показываем предпросмотр привязки ДО переименования
                     def sort_key(x):
                         m = re.search(r"\d+", x.name)
                         return int(m.group()) if m else x.name
 
                     files_sorted = sorted(files, key=sort_key)
+                    # Создаем маппинг только для тех файлов и подзаказов, которые можно сопоставить
+                    mapping = list(zip(files_sorted, suborders))
 
-                    print("\n    ┌─ ПРЕДПРОСМОТР ПРИВЯЗКИ (проверьте!) ───────────────────")
-                    for i, file_obj in enumerate(files_sorted):
-                        sub_id = suborders[i]
+                    print("\n    ┌─ ПРЕДПРОСМОТР ПРИВЯЗКИ ────────────────────────────────")
+                    for i, (file_obj, sub_id) in enumerate(mapping):
                         base_name = folder.name.replace(order_number, sub_id)
                         if re.search(r"([_-]?)\d*-?(face|back)", base_name, flags=re.IGNORECASE):
                             new_name = re.sub(
@@ -136,32 +126,38 @@ def process_archives(target_dir: str):
                         else:
                             new_name = f"{base_name}_{i+1}{file_obj.suffix}"
                         print(f"    │  {i+1}. {file_obj.name:30s}  ->  {new_name}")
+                        
+                    if len(suborders) != len(files):
+                        print(f"    │  🚨 ВНИМАНИЕ: Файлов {len(files)}, а подзаказов {len(suborders)}!")
                     print("    └────────────────────────────────────────────────────────")
 
-                    # Запрашиваем подтверждение (терминал или веб)
-                    if WEB_MODE:
-                        conflict_data = {
-                            "folder": folder.name,
-                            "files":  [f.name for f in files_sorted],
-                            "suborders": suborders,
-                            "mapping": [[f.name, suborders[i]] for i, f in enumerate(files_sorted)],
-                        }
-                        print(f"CONFLICT_DATA:{json.dumps(conflict_data)}", flush=True)
-                        response = sys.stdin.readline().strip()  # APPROVE или REJECT
-                        answer = "y" if response == "APPROVE" else "n"
+                    # Если количество совпало, переименовываем без вопросов.
+                    # Если не совпало, кидаем конфликт или спрашиваем подтверждение.
+                    if len(suborders) == len(files):
+                        answer = "y"
                     else:
-                        answer = input("\n    Всё верно? Переименовать? [y/n]: ").strip().lower()
+                        if WEB_MODE:
+                            conflict_data = {
+                                "folder": folder.name,
+                                "files":  [f.name for f in files_sorted],
+                                "suborders": suborders,
+                                "mapping": [[f.name, sub_id] for f, sub_id in mapping],
+                            }
+                            print(f"CONFLICT_DATA:{json.dumps(conflict_data)}", flush=True)
+                            response = sys.stdin.readline().strip()  # APPROVE или REJECT
+                            answer = "y" if response == "APPROVE" else "n"
+                        else:
+                            answer = input("\n    Количество не совпадает! Всё равно переименовать сопоставленные? [y/n]: ").strip().lower()
 
                     if answer != "y":
-                        reason = "Оператор отклонил привязку файлов"
+                        reason = f"Отклонено оператором (файлов: {len(files)}, подзаказов: {len(suborders)})"
                         print(f"    ⏭ Пропуск. Папка перемещена на ручную проверку.")
                         move_to_manual_check(folder, reason, target_path)
                         continue
 
                     # Переименовываем после подтверждения
                     print("    -> Переименовываем...")
-                    for i, file_obj in enumerate(files_sorted):
-                        sub_id = suborders[i]
+                    for i, (file_obj, sub_id) in enumerate(mapping):
                         base_name = folder.name.replace(order_number, sub_id)
                         if re.search(r"([_-]?)\d*-?(face|back)", base_name, flags=re.IGNORECASE):
                             new_name = re.sub(
