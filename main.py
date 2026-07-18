@@ -1,8 +1,13 @@
 import os
 import re
+import sys
+import json
 import shutil
 from pathlib import Path
 from datetime import datetime
+
+# WEB_MODE=1 — запущен из Flask, конфликты через stdout/stdin
+WEB_MODE = os.environ.get("WEB_MODE") == "1"
 
 # Импортируем наши готовые модули
 from unpack import unpack_archives
@@ -133,8 +138,19 @@ def process_archives(target_dir: str):
                         print(f"    │  {i+1}. {file_obj.name:30s}  ->  {new_name}")
                     print("    └────────────────────────────────────────────────────────")
 
-                    # Запрашиваем подтверждение
-                    answer = input("\n    Всё верно? Переименовать? [y/n]: ").strip().lower()
+                    # Запрашиваем подтверждение (терминал или веб)
+                    if WEB_MODE:
+                        conflict_data = {
+                            "folder": folder.name,
+                            "files":  [f.name for f in files_sorted],
+                            "suborders": suborders,
+                            "mapping": [[f.name, suborders[i]] for i, f in enumerate(files_sorted)],
+                        }
+                        print(f"CONFLICT_DATA:{json.dumps(conflict_data)}", flush=True)
+                        response = sys.stdin.readline().strip()  # APPROVE или REJECT
+                        answer = "y" if response == "APPROVE" else "n"
+                    else:
+                        answer = input("\n    Всё верно? Переименовать? [y/n]: ").strip().lower()
 
                     if answer != "y":
                         reason = "Оператор отклонил привязку файлов"
@@ -175,6 +191,6 @@ if __name__ == "__main__":
     with open("rename_log.txt", "w", encoding="utf-8") as f:
         f.write(f"=== ЛОГ ПЕРЕИМЕНОВАНИЙ [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ===\n")
 
-    # Папка для всех архивов
-    target_directory = "original_archives"
+    # Папка для всех архивов (может быть передана как аргумент командной строки)
+    target_directory = sys.argv[1] if len(sys.argv) > 1 else "original_archives"
     process_archives(target_directory)
