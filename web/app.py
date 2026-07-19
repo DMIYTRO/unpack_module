@@ -105,6 +105,7 @@ def dashboard():
     recent_runs = db.get_recent_runs(6)
     pending = db.get_pending_conflicts()
     config = db.get_schedule()
+    manual_paths = db.get_manual_paths()
     is_running = pipeline_runner.is_any_running()
     return render_template(
         "dashboard.html",
@@ -114,6 +115,7 @@ def dashboard():
         active_run_id=run_id,
         is_running=is_running,
         config=config,
+        manual_paths=manual_paths,
     )
 
 
@@ -121,6 +123,7 @@ def dashboard():
 def run_pipeline():
     source_dir = request.form.get("source_dir", "original_archives").strip()
     output_dir = request.form.get("output_dir", "").strip() or source_dir
+    db.save_manual_paths(source_dir, output_dir)
     try:
         run_id = pipeline_runner.start_run(source_dir, output_dir, trigger="manual")
         return redirect(url_for("dashboard") + f"?run_id={run_id}")

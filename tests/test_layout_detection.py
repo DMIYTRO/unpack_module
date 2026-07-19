@@ -54,6 +54,13 @@ class LayoutDetectionTests(unittest.TestCase):
             {"face": None, "back": None},
         )
 
+    def test_single_neutral_file_is_classified_as_face(self):
+        file_path = Path("Фото 18х12 см - Глянець - 8 шт.pdf")
+        self.assertEqual(
+            classify_face_back_paths([file_path]),
+            {"face": file_path, "back": None},
+        )
+
     def test_ambiguous_two_sided_order_requires_manual_check(self):
         with TemporaryDirectory() as temp:
             root = Path(temp) / "order_4-4_face"

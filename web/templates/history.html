@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}История — Unpack Module{% endblock %}
+
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+  <h1 class="page-title">📋 История переименований</h1>
+  <a href="/history/export" class="btn btn-ghost">⬇ Экспорт CSV</a>
+</div>
+
+<!-- Filters -->
+<div class="card mb-6">
+  <form method="GET" action="/history">
+    <div class="flex gap-3 items-center">
+      <input class="input" style="flex:1;" type="text" name="q"
+             value="{{ search }}" placeholder="Поиск по имени файла или папки…">
+      <input class="input" type="date" name="date_from" value="{{ date_from }}">
+      <button type="submit" class="btn btn-primary">🔍 Найти</button>
+      {% if search or date_from %}
+        <a href="/history" class="btn btn-ghost">✕ Сброс</a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+
+<!-- Table -->
+<div class="card">
+  <div class="flex justify-between items-center mb-4">
+    <div class="card-title" style="margin:0;">
+      Найдено: <strong style="color:var(--text)">{{ events|length }}</strong> записей
+    </div>
+  </div>
+
+  {% if events %}
+  <table>
+    <thead>
+      <tr>
+        <th>Дата / Время</th>
+        <th>Папка (заказ)</th>
+        <th>Оригинал</th>
+        <th>→ Новое имя</th>
+        <th>Режим</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td class="mono text-muted" style="white-space:nowrap;">
+          {{ e.timestamp[:16]|replace('T',' ') }}
+        </td>
+        <td>
+          <span class="truncate mono" style="display:block;max-width:220px;font-size:11px;color:var(--muted);"
+                title="{{ e.folder_name }}">{{ e.folder_name }}</span>
+        </td>
+        <td class="mono" style="color:var(--muted);">{{ e.original }}</td>
+        <td class="mono" style="color:var(--green);">{{ e.new_name }}</td>
+        <td>
+          <span class="status {{ e.mode }}">{{ e.mode }}</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div style="text-align:center;padding:48px;color:var(--muted);">
+      <div style="font-size:40px;margin-bottom:12px;">📭</div>
+      <div>Записей не найдено</div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

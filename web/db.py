@@ -53,6 +53,12 @@ def init_db():
         );
         INSERT OR IGNORE INTO schedule_config (id, cron_expression, enabled, target_dir)
         VALUES (1, '', 0, 'original_archives');
+        CREATE TABLE IF NOT EXISTS app_config (
+            id                INTEGER PRIMARY KEY,
+            manual_source_dir TEXT NOT NULL DEFAULT 'original_archives',
+            manual_output_dir TEXT NOT NULL DEFAULT 'original_archives'
+        );
+        INSERT OR IGNORE INTO app_config (id) VALUES (1);
     """)
     # Мягкая миграция для уже существующей history.db.
     conflict_columns = {row[1] for row in conn.execute("PRAGMA table_info(conflicts)")}
@@ -220,6 +226,35 @@ def update_last_run():
     conn.execute(
         "UPDATE schedule_config SET last_run=? WHERE id=1",
         (datetime.now().isoformat(),),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ── Manual run paths ────────────────────────────────────────────────────────
+
+def get_manual_paths():
+    conn = get_db()
+    row = conn.execute(
+        "SELECT manual_source_dir, manual_output_dir FROM app_config WHERE id=1"
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {
+            "source_dir": "original_archives",
+            "output_dir": "original_archives",
+        }
+    return {
+        "source_dir": row["manual_source_dir"],
+        "output_dir": row["manual_output_dir"],
+    }
+
+
+def save_manual_paths(source_dir, output_dir):
+    conn = get_db()
+    conn.execute(
+        "UPDATE app_config SET manual_source_dir=?, manual_output_dir=? WHERE id=1",
+        (source_dir, output_dir),
     )
     conn.commit()
     conn.close()

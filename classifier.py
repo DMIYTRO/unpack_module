@@ -35,12 +35,11 @@ def _classify(items: list, stem_getter) -> dict:
         "face": face_candidates[0] if face_candidates else None,
         "back": back_candidates[0] if back_candidates else None,
     }
-    if result["face"] == result["back"]:
-        return {"face": None, "back": None}
-
     # Единственный файл одностороннего заказа по-прежнему является лицом.
     if len(items) == 1 and not result["face"] and not result["back"]:
         result["face"] = items[0]
+    if result["face"] is not None and result["face"] == result["back"]:
+        return {"face": None, "back": None}
     return result
 
 
