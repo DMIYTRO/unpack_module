@@ -100,7 +100,10 @@ def decode_legacy_zip_name(filename: str, flag_bits: int) -> str:
         return filename
 
     candidates = [filename]
-    for encoding in ("cp866", "cp1251"):
+    # Некоторые архиваторы записывают настоящие UTF-8-байты, но забывают
+    # установить ZIP-флаг UTF-8. После стандартного CP437-декодирования это
+    # выглядит как ``╤ü╤é...``. Проверяем UTF-8 вместе со старыми Windows/OEM.
+    for encoding in ("utf-8", "cp866", "cp1251"):
         try:
             candidate = raw_name.decode(encoding)
         except UnicodeDecodeError:

@@ -239,7 +239,13 @@ def process_archives(source_dir: str, output_dir: str | None = None):
                 print(f"    -> Запрос API для заказа № {order_number} ...")
                 try:
                     from website_parser import fetch_suborders
-                    suborders = fetch_suborders(order_number)
+                    api_suborders = fetch_suborders(order_number)
+                    # getSubOrders возвращает только дочерние номера. Основной
+                    # заказ соответствует первому комплекту макетов.
+                    suborders = [order_number]
+                    suborders.extend(
+                        item for item in api_suborders if item != order_number
+                    )
 
                     # Ищем макеты во всей структуре распакованного заказа.
                     files = list_layout_files(folder)

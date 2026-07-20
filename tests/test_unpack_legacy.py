@@ -33,6 +33,11 @@ class LegacyZipEncodingTests(unittest.TestCase):
         mojibake = expected.encode("cp1251").decode("cp437")
         self.assertEqual(decode_legacy_zip_name(mojibake, 0), expected)
 
+    def test_unflagged_utf8_filename_is_restored(self):
+        expected = "NK0625 стікерпак 6х2cm (мікс 1).pdf"
+        mojibake = expected.encode("utf-8").decode("cp437")
+        self.assertEqual(decode_legacy_zip_name(mojibake, 0x8), expected)
+
     def test_utf8_filename_is_not_changed(self):
         expected = "макети/зворот.tif"
         self.assertEqual(decode_legacy_zip_name(expected, 0x800), expected)
@@ -45,6 +50,23 @@ class LegacyZipEncodingTests(unittest.TestCase):
             mojibake = expected.encode("cp866").decode("cp437")
             with zipfile.ZipFile(zip_path, "w") as archive:
                 archive.writestr(LegacyZipInfo(mojibake), b"layout")
+
+            output = root / "output"
+            output.mkdir()
+            _extract_zip_safely(zip_path, output)
+
+            self.assertEqual((output / expected).read_bytes(), b"layout")
+
+    def test_unflagged_utf8_zip_is_extracted_with_readable_cyrillic(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            zip_path = root / "unflagged-utf8.zip"
+            expected = "макети/стікерпак.pdf"
+            mojibake = expected.encode("utf-8").decode("cp437")
+            info = LegacyZipInfo(mojibake)
+            info.flag_bits = 0x8
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr(info, b"layout")
 
             output = root / "output"
             output.mkdir()

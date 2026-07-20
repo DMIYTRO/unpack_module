@@ -96,6 +96,28 @@ class LayoutDetectionTests(unittest.TestCase):
             self.assertTrue((folder / "left.tif").exists())
             self.assertTrue((folder / "right.tif").exists())
 
+    def test_web_pipeline_adds_main_order_to_api_suborders(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder = root / "job_4-0_(1-25610128)_face"
+            folder.mkdir()
+            for index in range(1, 6):
+                (folder / f"{index}.pdf").write_bytes(f"layout-{index}".encode())
+
+            output = StringIO()
+            with patch("main.unpack_archives"), patch("main.WEB_MODE", True), patch(
+                "website_parser.fetch_suborders",
+                return_value=["25610129", "25610130", "25610131", "25610132"],
+            ), redirect_stdout(output):
+                main.process_archives(str(root))
+
+            self.assertNotIn("CONFLICT_DATA:", output.getvalue())
+            self.assertTrue((folder / ".done").exists())
+            expected_orders = range(25610128, 25610133)
+            for index, order_id in enumerate(expected_orders, start=1):
+                expected = folder / f"job_4-0_(1-{order_id})_face_{index}.pdf"
+                self.assertTrue(expected.exists(), expected)
+
 
 if __name__ == "__main__":
     unittest.main()
