@@ -18,6 +18,8 @@ test_archives/
 
 # HTML-снапшоты для отладки
 *.html
+!web/templates/
+!web/templates/*.html
 
 # Лог переименований (генерируется автоматически)
 rename_log.txt

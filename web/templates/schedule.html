@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Расписание — Unpack Module{% endblock %}
+
+{% block content %}
+<h1 class="page-title">🕐 Расписание</h1>
+
+<div class="card mb-6">
+  <form action="/schedule" method="POST">
+    <div class="card-title">Автоматический запуск</div>
+
+    <!-- Enable toggle -->
+    <div class="flex items-center gap-3 mb-6"
+         style="background:var(--surface2);border-radius:10px;padding:16px 20px;">
+      <label class="toggle">
+        <input type="checkbox" name="enabled" id="toggle-enabled"
+               {{ 'checked' if config.enabled }} onchange="toggleCron()">
+        <span class="toggle-slider"></span>
+      </label>
+      <div>
+        <div style="font-weight:600;font-size:14px;">Расписание
+          {{ '— включено ✅' if config.enabled else '— выключено' }}
+        </div>
+        <div class="text-muted">Пайплайн будет запускаться автоматически по cron</div>
+      </div>
+    </div>
+
+    <!-- Cron expression -->
+    <div id="cron-block" style="{{ 'display:none;' if not config.enabled }}">
+      <div class="mb-4">
+        <label style="font-size:13px;color:var(--muted);display:block;margin-bottom:8px;">
+          Cron-выражение (5 полей: мин час день месяц день_недели)
+        </label>
+        <input class="input" style="width:100%;font-family:'JetBrains Mono',monospace;"
+               type="text" name="cron_expression" id="cron-input"
+               value="{{ config.cron_expression }}"
+               placeholder="0 9 * * 1-5"
+               oninput="explainCron(this.value)">
+        <div id="cron-hint" style="margin-top:8px;font-size:12px;color:var(--accent);"></div>
+      </div>
+
+      <!-- Quick presets -->
+      <div class="mb-6">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">Быстрые пресеты:</div>
+        <div class="flex gap-2" style="flex-wrap:wrap;">
+          <button type="button" class="btn btn-ghost" style="font-size:12px;padding:5px 12px;"
+                  onclick="setCron('0 9 * * 1-5')">Будни в 9:00</button>
+          <button type="button" class="btn btn-ghost" style="font-size:12px;padding:5px 12px;"
+                  onclick="setCron('0 */2 * * *')">Каждые 2 часа</button>
+          <button type="button" class="btn btn-ghost" style="font-size:12px;padding:5px 12px;"
+                  onclick="setCron('0 8,14 * * *')">В 8:00 и 14:00</button>
+          <button type="button" class="btn btn-ghost" style="font-size:12px;padding:5px 12px;"
+                  onclick="setCron('30 7 * * 1-5')">Будни в 7:30</button>
+        </div>
+      </div>
+
+      <div class="mb-6">
+        <label style="font-size:13px;color:var(--muted);display:block;margin-bottom:8px;">
+          Исходная папка с архивами
+        </label>
+        <input class="input" style="width:100%;" type="text" name="target_dir"
+               value="{{ config.target_dir }}" placeholder="original_archives">
+      </div>
+
+      <div class="mb-6">
+        <label style="font-size:13px;color:var(--muted);display:block;margin-bottom:8px;">
+          Финальная папка обработанных файлов
+        </label>
+        <input class="input" style="width:100%;" type="text" name="output_dir"
+               value="{{ config.output_dir or config.target_dir }}" placeholder="processed_orders">
+        <div class="text-muted" style="margin-top:7px;font-size:12px;">Готовые папки будут создаваться здесь; архивы после успеха перейдут во входящую папку <span class="mono">_DONE_</span>.</div>
+      </div>
+    </div>
+
+    <div class="flex gap-3">
+      <button type="submit" class="btn btn-primary">💾 Сохранить</button>
+    </div>
+  </form>
+</div>
+
+<!-- Info card -->
+<div class="card">
+  <div class="card-title">Информация</div>
+  <table style="font-size:13px;">
+    <tbody>
+      <tr>
+        <td style="padding:8px 12px;color:var(--muted);width:180px;">Последний запуск</td>
+        <td class="mono">{{ config.last_run[:16]|replace('T',' ') if config.last_run else '—' }}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;color:var(--muted);">Следующий запуск</td>
+        <td class="mono">{{ next_run.strftime('%Y-%m-%d %H:%M') if next_run else '—' }}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;color:var(--muted);">Cron-выражение</td>
+        <td class="mono">{{ config.cron_expression or '—' }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+  function toggleCron() {
+    const enabled = document.getElementById('toggle-enabled').checked;
+    document.getElementById('cron-block').style.display = enabled ? '' : 'none';
+  }
+  function setCron(expr) {
+    document.getElementById('cron-input').value = expr;
+    explainCron(expr);
+  }
+  function explainCron(expr) {
+    const hints = {
+      '0 9 * * 1-5': '▶ Каждый будний день в 9:00',
+      '0 */2 * * *': '▶ Каждые 2 часа',
+      '0 8,14 * * *': '▶ Ежедневно в 8:00 и 14:00',
+      '30 7 * * 1-5': '▶ Каждый будний день в 7:30',
+    };
+    const el = document.getElementById('cron-hint');
+    el.textContent = hints[expr.trim()] || '';
+  }
+  // Init
+  explainCron(document.getElementById('cron-input')?.value || '');
+</script>
+{% endblock %}

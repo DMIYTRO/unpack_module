@@ -41,13 +41,13 @@
       <div style="flex:1;">
         <label class="text-muted" style="display:block;margin-bottom:6px;">Исходная папка с RAR-архивами</label>
         <input class="input" style="width:100%;" type="text" name="source_dir"
-               value="{{ config.target_dir or 'original_archives' }}" placeholder="/путь/к/входящим"
+               value="{{ manual_paths.source_dir }}" placeholder="/путь/к/входящим"
                {% if is_running %}disabled{% endif %}>
       </div>
       <div style="flex:1;">
         <label class="text-muted" style="display:block;margin-bottom:6px;">Финальная папка обработанных файлов</label>
         <input class="input" style="width:100%;" type="text" name="output_dir"
-               value="{{ config.output_dir or config.target_dir or 'original_archives' }}" placeholder="/путь/к/готовым"
+               value="{{ manual_paths.output_dir }}" placeholder="/путь/к/готовым"
                {% if is_running %}disabled{% endif %}>
       </div>
     </div>

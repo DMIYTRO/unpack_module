@@ -14,6 +14,26 @@ import pipeline_runner
 
 
 class AtomicRenameTests(unittest.TestCase):
+    def test_staging_name_is_not_hidden_on_smb_filesystems(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source.tif"
+            destination = root / "destination.tif"
+            source.write_text("source", encoding="utf-8")
+            real_rename = os.rename
+            staged_names = []
+
+            def record_rename(old, new):
+                if Path(old) == source:
+                    staged_names.append(Path(new).name)
+                return real_rename(old, new)
+
+            with patch("atomic_rename.os.rename", side_effect=record_rename):
+                atomic_rename_many([(source, destination)])
+
+            self.assertEqual(len(staged_names), 1)
+            self.assertFalse(staged_names[0].startswith("."))
+
     def test_existing_destination_is_never_overwritten(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -102,6 +122,18 @@ class PipelineLockTests(unittest.TestCase):
                 pipeline_runner.start_run("/tmp/input")
 
         self.assertIn(first_run, pipeline_runner._active_run_ids)
+
+
+class RenameLogParsingTests(unittest.TestCase):
+    def test_site_arrow_is_recorded_in_history(self):
+        pipeline_runner._current_folder.clear()
+        with patch("db.log_rename") as log_rename:
+            pipeline_runner._try_log_rename("run-1", "--- Переименование в папке: order ---")
+            pipeline_runner._try_log_rename("run-1", "    [SITE] original.pdf  →  renamed.pdf")
+
+        log_rename.assert_called_once_with(
+            "run-1", "order", "original.pdf", "renamed.pdf", "site"
+        )
 
 
 class ConflictResolutionTests(unittest.TestCase):

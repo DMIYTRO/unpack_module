@@ -55,9 +55,12 @@ def atomic_rename_many(mapping: Iterable[tuple[Path | str, Path | str]]) -> None
     completed: list[tuple[Path, Path, Path]] = []
     try:
         for source, destination in operations:
-            temporary = source.with_name(f".{source.name}.rename-{uuid.uuid4().hex}.tmp")
+            # QNAP/Samba may translate a leading dot into the persistent DOS
+            # Hidden attribute.  Use a non-hidden, unsupported-extension name
+            # so the final file remains visible to Windows clients.
+            temporary = source.with_name(f"rename-{uuid.uuid4().hex}-{source.name}.tmp")
             while temporary.exists():
-                temporary = source.with_name(f".{source.name}.rename-{uuid.uuid4().hex}.tmp")
+                temporary = source.with_name(f"rename-{uuid.uuid4().hex}-{source.name}.tmp")
             os.rename(source, temporary)
             staged.append((source, temporary, destination))
 

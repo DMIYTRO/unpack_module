@@ -134,8 +134,8 @@ def _worker(run_id: str, source_dir: str, output_dir: str):
 
 
 # Паттерны для парсинга строк из stdout main.py / renamer.py
-_RE_LOCAL = re.compile(r"^\[(?:FACE|BACK)\] (.+?)\s+-{3}>\s+(.+)$")
-_RE_SITE  = re.compile(r"^\s+\[SITE\] (.+?)\s+-{3}>\s+(.+)$")
+_RE_LOCAL = re.compile(r"^\[(?:FACE|BACK)\] (.+?)\s+(?:-{3}>|→)\s+(.+)$")
+_RE_SITE  = re.compile(r"^\s+\[SITE\] (.+?)\s+(?:-{3}>|→)\s+(.+)$")
 _RE_FOLDER= re.compile(r"^---\s+Переименование в папке:\s+(.+?)\s+---$")
 _current_folder: dict[str, str] = {}  # run_id → текущая папка
 
