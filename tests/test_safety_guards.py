@@ -1,7 +1,9 @@
 import sys
 import os
+import io
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -16,11 +18,36 @@ from website_parser import OrderDataError, parse_suborders_from_html
 from unpack import unpack_archives
 from renamer import rename_files_in_folder
 from validator import validate_folder
-from main import build_site_mapping, move_archive_to_done
+from main import build_site_mapping, ensure_pipeline_directory, move_archive_to_done, process_archives
 import pipeline_runner
 
 
 class SafetyGuardTests(unittest.TestCase):
+    def test_missing_input_and_output_directories_are_created(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_dir = root / "incoming"
+            output_dir = root / "processed"
+
+            with patch("main.unpack_archives") as unpack_mock:
+                result = process_archives(str(source_dir), str(output_dir))
+
+            self.assertTrue(result)
+            self.assertTrue(source_dir.is_dir())
+            self.assertTrue(output_dir.is_dir())
+            unpack_mock.assert_called_once_with(str(source_dir.resolve()), str(output_dir.resolve()))
+
+    def test_unmounted_network_resource_has_a_clear_error(self):
+        network_path = Path("/mnt/qnap-a/WORK/digital/ORDER/archives")
+        output = io.StringIO()
+
+        with patch("main.os.path.ismount", return_value=False), redirect_stdout(output):
+            result = ensure_pipeline_directory(network_path, "Входной каталог")
+
+        self.assertFalse(result)
+        self.assertIn("Сетевой ресурс недоступен", output.getvalue())
+        self.assertIn("не примонтирован", output.getvalue())
+
     def test_order_number_is_not_treated_as_print_sides(self):
         folder_name = "job_(17618-25516399)_offset"
         self.assertIsNone(parse_sides_from_foldername(folder_name))

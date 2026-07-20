@@ -23,6 +23,44 @@ DONE_MARKER = ".done"
 MANUAL_CHECK_DIR = "_REQUIRES_MANUAL_CHECK_"
 
 
+def _network_mount_root(path: Path) -> Path | None:
+    """Return the mount root for the network locations used in production."""
+    if not path.is_absolute():
+        return None
+
+    parts = path.parts
+    if len(parts) >= 3 and parts[1] in {"mnt", "Volumes"}:
+        return Path(parts[0]) / parts[1] / parts[2]
+    return None
+
+
+def ensure_pipeline_directory(path: Path, label: str) -> bool:
+    """Create a pipeline directory without masking an unavailable NAS mount."""
+    mount_root = _network_mount_root(path)
+    if mount_root is not None and not os.path.ismount(mount_root):
+        print(f"❌ Сетевой ресурс недоступен: {mount_root} не примонтирован.")
+        print(f"   Не удалось подготовить {label.lower()}: {path}")
+        print("   Проверьте подключение NAS/QNAP и повторите запуск.")
+        return False
+
+    existed = path.exists()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        if not path.is_dir():
+            print(f"❌ {label} не является каталогом: {path}")
+            return False
+        # Проверяем доступ к каталогу сейчас, а не только наличие записи пути.
+        next(path.iterdir(), None)
+    except OSError as exc:
+        print(f"❌ {label} недоступен: {path}")
+        print(f"   Сетевая папка не подключена или нет доступа: {exc}")
+        return False
+
+    if not existed:
+        print(f"📁 {label} не найден — создан: {path}")
+    return True
+
+
 def files_per_suborder(folder_name: str) -> int:
     """Сколько файлов должен содержать один подзаказ по его сторонности."""
     sides = parse_filename(folder_name).get("sides")
@@ -136,14 +174,36 @@ def move_to_manual_check(folder: Path, reason: str, base_dir: Path):
 def process_archives(source_dir: str, output_dir: str | None = None):
     source_path = Path(source_dir).resolve()
     target_path = Path(output_dir or source_dir).resolve()
+
+    if not ensure_pipeline_directory(source_path, "Входной каталог"):
+        return False
+    if target_path != source_path and not ensure_pipeline_directory(target_path, "Выходной каталог"):
+        return False
+
     print("=== ЭТАП 1: Распаковка архивов ===")
     print(f"Источник архивов: {source_path}")
     print(f"Папка обработки:  {target_path}")
-    unpack_archives(str(source_path), str(target_path))
+    try:
+        unpack_archives(str(source_path), str(target_path))
+        if not source_path.is_dir() or not target_path.is_dir():
+            print("❌ Сетевой ресурс стал недоступен во время распаковки.")
+            print("   Проверьте подключение NAS/QNAP и повторите запуск.")
+            return False
+    except OSError as exc:
+        print(f"❌ Ошибка доступа к сетевому ресурсу: {exc}")
+        print("   Проверьте, что входной и выходной каталоги примонтированы.")
+        return False
 
     print("\n=== ЭТАП 2: Проверка и Переименование ===")
     failures = []
-    for folder in sorted(target_path.iterdir()):
+    try:
+        folders = sorted(target_path.iterdir())
+    except OSError as exc:
+        print(f"❌ Не удалось прочитать выходной каталог {target_path}: {exc}")
+        print("   Сетевой ресурс недоступен или каталог не примонтирован.")
+        return False
+
+    for folder in folders:
         # Игнорируем файлы и служебные папки
         if not folder.is_dir():
             continue
@@ -298,6 +358,7 @@ def process_archives(source_dir: str, output_dir: str | None = None):
 
     if failures:
         raise RuntimeError("Не обработаны заказы: " + "; ".join(failures))
+    return True
 
 
 if __name__ == "__main__":
@@ -308,4 +369,7 @@ if __name__ == "__main__":
     # Папка для всех архивов (может быть передана как аргумент командной строки)
     source_directory = sys.argv[1] if len(sys.argv) > 1 else "original_archives"
     output_directory = sys.argv[2] if len(sys.argv) > 2 else source_directory
-    process_archives(source_directory, output_directory)
+    if not process_archives(source_directory, output_directory):
+        # Понятное сообщение уже выведено выше; завершаемся без traceback,
+        # но с ненулевым кодом, чтобы веб-интерфейс отметил запуск как ошибку.
+        sys.exit(2)
