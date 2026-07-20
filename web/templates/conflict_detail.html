@@ -27,6 +27,13 @@
 <form action="/conflicts/{{ conflict.id }}/approve" method="POST">
 <div class="card mb-6">
   <div class="card-title">Назначьте имена и проверьте макеты</div>
+  {% if conflict.bulk_main_order_proposal %}
+  <div style="margin:12px 0;padding:12px;border:1px solid rgba(245,166,35,.35);border-radius:8px;background:rgba(245,166,35,.08);">
+    Предложение: присвоить всем {{ conflict.files|length }} файлам основной номер
+    <strong>{{ conflict.suborders[0] }}</strong> и пронумеровать их от 1 до {{ conflict.files|length }}.
+    Проверьте порядок и имена — переименование произойдёт только после нажатия кнопки подтверждения.
+  </div>
+  {% endif %}
   <div class="text-muted mb-4">Новое имя применяется в текущей подпапке. Поле можно изменить вручную.</div>
   <table>
     <thead>

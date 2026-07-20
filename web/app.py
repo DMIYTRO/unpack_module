@@ -222,6 +222,15 @@ def conflict_detail(conflict_id):
         }
         for source in conflict["files"]
     ]
+    conflict["bulk_main_order_proposal"] = (
+        len(conflict["suborders"]) == 1
+        and len(conflict["mapping"]) == len(conflict["files"])
+        and len(conflict["files"]) > 1
+        and all(
+            str(item[1]) == str(conflict["suborders"][0])
+            for item in conflict["mapping"]
+        )
+    )
     return render_template("conflict_detail.html", conflict=conflict)
 
 

@@ -106,6 +106,44 @@ def build_site_mapping(folder: Path, files_sorted: list[Path], suborders: list[s
     return mapping, per_suborder
 
 
+def natural_layout_sort_key(root: Path, path: Path) -> tuple:
+    """Сортирует вложенные пути естественно: 2.jpg раньше 10.jpg."""
+    relative = str(path.relative_to(root)).casefold()
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in re.split(r"(\d+)", relative)
+        if part
+    )
+
+
+def build_bulk_jpeg_mapping(
+    folder: Path,
+    files_sorted: list[Path],
+    suborders: list[str],
+) -> list[tuple[Path, str, str]] | None:
+    """Предлагает оператору пронумеровать односторонний JPG-пакет 1..N.
+
+    Такое сопоставление намеренно не применяется автоматически. Оно допустимо
+    только для единственного (основного) заказа без подзаказов: для двух сторон
+    или смешанных форматов порядок файлов требует отдельного решения оператора.
+    """
+    if (
+        len(suborders) != 1
+        or files_per_suborder(folder.name) != 1
+        or len(files_sorted) <= 1
+        or any(path.suffix.casefold() not in {".jpg", ".jpeg"} for path in files_sorted)
+    ):
+        return None
+
+    order_id = suborders[0]
+    parsed_order = parse_filename(folder.name).get("order_number") or ""
+    base_name = folder.name.replace(parsed_order, order_id)
+    return [
+        (file_obj, order_id, f"{base_name}_{index}{file_obj.suffix}")
+        for index, file_obj in enumerate(files_sorted, start=1)
+    ]
+
+
 def move_archive_to_done(folder: Path, archive_dir: Path | None = None):
     """Переносит исходный .rar или .zip архив из входящей папки в _DONE_."""
     base_dir = (archive_dir or folder.parent).resolve()
@@ -250,15 +288,16 @@ def process_archives(source_dir: str, output_dir: str | None = None):
                     # Ищем макеты во всей структуре распакованного заказа.
                     files = list_layout_files(folder)
 
-                    def sort_key(x):
-                        m = re.search(r"\d+", x.name)
-                        return (0, int(m.group()), x.name.casefold()) if m else (1, 0, x.name.casefold())
-
-                    files_sorted = sorted(files, key=sort_key)
+                    files_sorted = sorted(files, key=lambda path: natural_layout_sort_key(folder, path))
                     # Для 4-4, 5-5 и т.п. два файла образуют один подзаказ:
                     # первый — лицо, второй — оборот.
                     mapping_full, files_per_order = build_site_mapping(folder, files_sorted, suborders)
                     expected_file_count = len(suborders) * files_per_order
+                    bulk_jpeg_mapping = build_bulk_jpeg_mapping(folder, files_sorted, suborders)
+                    if expected_file_count != len(files) and bulk_jpeg_mapping is not None:
+                        # Полное предложение для формы конфликта. Подтверждение
+                        # оператора всё равно обязательно из-за несовпадения.
+                        mapping_full = bulk_jpeg_mapping
 
                     max_name_len = max((len(item[0].name) for item in mapping_full), default=30)
                     max_name_len = min(max(max_name_len, 30), 60) # ширина от 30 до 60 символов

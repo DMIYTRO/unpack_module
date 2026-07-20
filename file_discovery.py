@@ -7,6 +7,8 @@ SUPPORTED_LAYOUT_EXTENSIONS = frozenset({
     ".ai",
     ".cdr",
     ".eps",
+    ".jpeg",
+    ".jpg",
     ".pdf",
     ".ps",
     ".psb",
