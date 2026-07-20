@@ -236,7 +236,7 @@ def process_archives(source_dir: str, output_dir: str | None = None):
             order_number = info.get("order_number")
 
             if order_number:
-                print(f"    -> Запуск Playwright для заказа № {order_number} ...")
+                print(f"    -> Запрос API для заказа № {order_number} ...")
                 try:
                     from website_parser import fetch_suborders
                     suborders = fetch_suborders(order_number)

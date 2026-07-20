@@ -1,150 +1,83 @@
+"""Клиент API sborka.ua для получения подзаказов."""
+
+from __future__ import annotations
+
 import os
 import re
-from datetime import date, timedelta
-from urllib.parse import urlencode
-from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+
+import requests
 from dotenv import load_dotenv
 
 
+API_URL = "https://sborka.ua/api.php"
+
+
 class WebsiteParserError(RuntimeError):
-    """Базовая ошибка получения данных с сайта."""
+    """Базовая ошибка получения данных о заказе."""
 
 
 class SiteAccessError(WebsiteParserError):
-    """Сайт недоступен, авторизация не прошла или ответ нельзя загрузить."""
+    """API недоступен, отклонил запрос или вернул ошибку HTTP."""
 
 
 class OrderDataError(WebsiteParserError):
-    """Страница получена, но её структура или данные заказа не распознаны."""
+    """Номер заказа или ответ API имеет неожиданный формат."""
 
 
-def build_orders_url(order_number: str, today: date | None = None) -> str:
-    """Собрать URL поиска с плавающим окном вокруг текущей даты."""
-    if not order_number.isdigit():
+def _validate_order_number(order_number: str) -> str:
+    value = str(order_number).strip()
+    if not value.isdigit():
         raise OrderDataError(f"Некорректный номер заказа: {order_number!r}")
+    return value
 
-    current_date = today or date.today()
-    date_from = (current_date - timedelta(days=60)).isoformat()
-    date_till = (current_date + timedelta(days=1)).isoformat()
-    query = urlencode(
-        {
-            "type": "all",
-            "datefrom": date_from,
-            "datetill": date_till,
-            "datefrom2": date_from,
-            "datetill2": date_till,
-            "client_id": "",
-            "orderid": order_number,
-            "manager": 0,
-            "statuss": 0,
-            "politics": 0,
-            "pay": 0,
-            "delivery": 0,
-            "sborka_id": "",
-            "button": "ok",
-        }
-    )
-    return f"https://sborka.ua/adm/orders.php?{query}"
 
-def fetch_suborders(order_number: str) -> list[str]:
-    """
-    Авторизуется на сайте, загружает страницу заказа и возвращает 
-    отсортированный список всех подзаказов для данного order_number.
-    """
+def parse_suborders_response(response_text: str) -> list[str]:
+    """Разбирает текстовый ответ API: номера, разделённые запятыми."""
+    value = response_text.strip().rstrip(",").strip()
+    if not value:
+        return []
+
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    invalid = [item for item in items if not re.fullmatch(r"\d+", item)]
+    if invalid:
+        preview = response_text.strip().replace("\n", " ")[:160]
+        raise OrderDataError(f"API вернул неожиданный ответ: {preview!r}")
+
+    # Убираем дубликаты и сохраняем числовой порядок подзаказов.
+    return sorted(set(items), key=int)
+
+
+def fetch_suborders(
+    order_number: str,
+    api_key: str | None = None,
+    timeout: int = 10,
+) -> list[str]:
+    """Получает подзаказы через единственный запрос ``getSubOrders``."""
+    order_number = _validate_order_number(order_number)
     load_dotenv()
-    LOGIN_USER = os.environ.get("LOGIN_USER")
-    ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+    key = api_key or os.getenv("SBORKA_API_KEY")
+    if not key:
+        raise SiteAccessError("В .env не задан SBORKA_API_KEY")
 
-    if not LOGIN_USER or not ADMIN_PASSWORD:
-        raise SiteAccessError("В .env не заданы LOGIN_USER или ADMIN_PASSWORD")
-    # Пароль передаётся Playwright отдельно, поэтому не попадает в URL и логи.
-    url = build_orders_url(order_number)
-
-    print(f"[{order_number}] Подключение к сайту и поиск подзаказов...")
-    
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-            ],
+    print(f"[{order_number}] Запрос подзаказов через API sborka.ua...")
+    try:
+        response = requests.post(
+            API_URL,
+            params={"action": "getSubOrders", "id": order_number},
+            data={"api_key": key},
+            timeout=timeout,
         )
-        context = browser.new_context(
-            http_credentials={"username": "admin", "password": ADMIN_PASSWORD},
-            viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
-        page = context.new_page()
-        page.set_default_timeout(30000)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise SiteAccessError(f"Ошибка запроса к API sborka.ua: {exc}") from exc
 
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2000)
+    return parse_suborders_response(response.text)
 
-            # Если на сайте есть дополнительная форма логина
-            if page.query_selector('input[name="pass_worker"]'):
-                page.fill('input[name="pass_worker"]', LOGIN_USER)
-                page.click('input[name="button"]')
-                page.wait_for_load_state("domcontentloaded", timeout=30000)
-                page.wait_for_timeout(2000)
-                page.goto(url, wait_until="domcontentloaded")
-                page.wait_for_timeout(2000)
-
-            html_content = page.content()
-            suborders = parse_suborders_from_html(html_content, order_number)
-            return sorted(suborders)
-
-        except WebsiteParserError:
-            raise
-        except Exception as e:
-            raise SiteAccessError(f"Ошибка во время загрузки страницы: {e}") from e
-        finally:
-            browser.close()
-
-
-def parse_suborders_from_html(html_content: str, main_order_number: str) -> list[str]:
-    soup = BeautifulSoup(html_content, "html.parser")
-    suborders = []
-
-    # Ищем основную таблицу заказов
-    target_table = None
-    for table in soup.find_all("table"):
-        headers = [th.get_text(strip=True).lower() for th in table.find_all(["th", "td"])]
-        if "заказчик" in headers and "тираж" in headers:
-            target_table = table
-            break
-
-    if not target_table:
-        raise OrderDataError("Таблица с заказами не найдена на странице")
-
-    rows = target_table.find_all("tr")
-
-    for row in rows:
-        cells = row.find_all("td")
-        if len(cells) < 11:
-            continue
-
-        # Первая ячейка (индекс 0) содержит номер заказа и подзаказа: "25509673 (25509667)"
-        order_num_raw = cells[0].get_text(strip=True)
-        match = re.search(r"(\d+)\s*(?:\((\d+)\))?", order_num_raw)
-        
-        if match:
-            sub_id = match.group(1) # Например, 25509673
-            main_id = match.group(2) # Например, 25509667
-
-            # Обязательно проверяем, что строка относится к искомому заказу
-            # Либо main_id совпадает, либо это он и есть
-            if main_id == main_order_number or sub_id == main_order_number:
-                suborders.append(sub_id)
-
-    # Убираем дубликаты на всякий случай
-    return list(set(suborders))
 
 if __name__ == "__main__":
-    # Быстрый тест
-    res = fetch_suborders("25509667")
-    print("Найдены подзаказы:", res)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Получить подзаказы из API sborka.ua")
+    parser.add_argument("order_number", help="Номер основного заказа")
+    args = parser.parse_args()
+    print("Найдены подзаказы:", fetch_suborders(args.order_number))

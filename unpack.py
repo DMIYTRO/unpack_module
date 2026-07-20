@@ -1,5 +1,6 @@
 import os
 import shutil
+import stat
 import subprocess
 import uuid
 import zipfile
@@ -9,6 +10,12 @@ from datetime import datetime
 # Папка для битых архивов
 TROUBLES_DIR = "_TROUBLES_"
 EXTRACT_TIMEOUT_SECONDS = 15 * 60
+MAX_ARCHIVE_SIZE_BYTES = 1_500_000_000
+ZIP_UTF8_FLAG = 0x800
+
+
+class ArchiveLimitError(RuntimeError):
+    """Архив превышает разрешённый размер."""
 
 
 def _unique_path(directory: Path, filename: str) -> Path:
@@ -53,15 +60,82 @@ def _build_command(tool: str, rar_file: Path, extract_dir: Path) -> list[str]:
     raise ValueError(f"Неизвестный инструмент: {tool}")
 
 
+def _legacy_name_score(value: str) -> int:
+    """Оценивает, насколько строка похожа на нормальное имя файла."""
+    score = 0
+    lowercase_seen = any(char.islower() for char in value)
+    for index, char in enumerate(value):
+        codepoint = ord(char)
+        if char.isascii():
+            score += 1 if char.isprintable() else -20
+        elif 0x0400 <= codepoint <= 0x04FF:
+            score += 5
+            if lowercase_seen and char.isupper() and index > 0:
+                score -= 8
+        elif char.isalpha():
+            score += 1
+        elif char.isspace():
+            score += 1
+        else:
+            score -= 4
+
+    common_pairs = (
+        "ст", "но", "на", "ен", "ов", "ни", "пр", "ро", "по", "ли",
+        "ре", "та", "ал", "ер", "ти", "те", "ка", "ит", "ан", "ар",
+        "ос", "от", "го", "ла", "не", "за", "ва", "де", "ри", "ру",
+        "ли", "це", "зв", "во", "ор", "дру", "ма", "ке",
+    )
+    lowered = value.casefold()
+    score += sum(lowered.count(pair) * 3 for pair in common_pairs)
+    return score
+
+
+def decode_legacy_zip_name(filename: str, flag_bits: int) -> str:
+    """Исправляет CP866/CP1251-имена ZIP без установленного UTF-8-флага."""
+    if flag_bits & ZIP_UTF8_FLAG:
+        return filename
+    try:
+        raw_name = filename.encode("cp437")
+    except UnicodeEncodeError:
+        return filename
+
+    candidates = [filename]
+    for encoding in ("cp866", "cp1251"):
+        try:
+            candidate = raw_name.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    return max(candidates, key=_legacy_name_score)
+
+
 def _extract_zip_safely(zip_file: Path, extract_dir: Path):
-    """Распаковывает ZIP, не позволяя записи выйти за пределы extract_dir."""
+    """Безопасно распаковывает ZIP и восстанавливает старые имена кириллицей."""
     root = extract_dir.resolve()
+    destinations: set[Path] = set()
     with zipfile.ZipFile(zip_file) as archive:
         for member in archive.infolist():
-            destination = (root / member.filename).resolve()
+            member_name = decode_legacy_zip_name(member.filename, member.flag_bits)
+            member_name = member_name.replace("\\", "/")
+            destination = (root / member_name).resolve()
             if destination != root and root not in destination.parents:
-                raise ValueError(f"ZIP содержит небезопасный путь: {member.filename}")
-        archive.extractall(root)
+                raise ValueError(f"ZIP содержит небезопасный путь: {member_name}")
+            if destination in destinations:
+                raise ValueError(f"ZIP содержит повторяющийся путь: {member_name}")
+            destinations.add(destination)
+
+            unix_mode = member.external_attr >> 16
+            if stat.S_ISLNK(unix_mode):
+                raise ValueError(f"ZIP содержит символическую ссылку: {member_name}")
+            if member.is_dir() or member_name.endswith("/"):
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, destination.open("wb") as target:
+                shutil.copyfileobj(source, target)
 
 
 def unpack_archives(source_dir: str, output_dir: str | None = None):
@@ -94,9 +168,9 @@ def unpack_archives(source_dir: str, output_dir: str | None = None):
             "   macOS : brew install unar\n"
             "   Ubuntu: sudo apt install unar\n"
             "   или   : sudo apt install unrar\n"
-            "   или   : sudo apt install p7zip-full"
+            "   или   : sudo apt install p7zip-full\n"
+            "   RAR будут оставлены во входной папке без изменений."
         )
-        return
 
     if tool:
         print(f"Инструмент распаковки RAR: {tool}")
@@ -119,6 +193,14 @@ def unpack_archives(source_dir: str, output_dir: str | None = None):
         error_reason = None
 
         try:
+            archive_size = archive_file.stat().st_size
+            if archive_size > MAX_ARCHIVE_SIZE_BYTES:
+                raise ArchiveLimitError(
+                    f"Архив превышает лимит 1,5 ГБ: {archive_size / 1_000_000_000:.2f} ГБ"
+                )
+            if archive_file.suffix.lower() == ".rar" and not tool:
+                print("    ⏭ Пропуск: нет программы для распаковки RAR")
+                continue
             if extract_dir_exists:
                 raise FileExistsError(
                     f"Рабочая папка {extract_dir.name}/ уже существует; архив не будет перезаписан"
@@ -139,6 +221,10 @@ def unpack_archives(source_dir: str, output_dir: str | None = None):
             # Публикуем результат только после успешной распаковки.
             temp_dir.replace(extract_dir)
             print("Успешно распаковано.")
+
+        except ArchiveLimitError as e:
+            error_reason = str(e)
+            print(f"❌ {error_reason}")
 
         except subprocess.CalledProcessError as e:
             error_msg = (

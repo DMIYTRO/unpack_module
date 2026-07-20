@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "web"))
 
 from filename_parser import parse_filename
 from validator import parse_sides_from_foldername
-from website_parser import OrderDataError, parse_suborders_from_html
+from website_parser import OrderDataError, parse_suborders_response
 from unpack import unpack_archives
 from renamer import rename_files_in_folder
 from validator import validate_folder
@@ -57,9 +57,9 @@ class SafetyGuardTests(unittest.TestCase):
         self.assertEqual(parse_filename(name)["sides"], "4-4")
         self.assertEqual(parse_sides_from_foldername(name), "4-4")
 
-    def test_changed_site_markup_is_an_explicit_error(self):
+    def test_unexpected_api_response_is_an_explicit_error(self):
         with self.assertRaises(OrderDataError):
-            parse_suborders_from_html("<html><body>temporary error</body></html>", "25509667")
+            parse_suborders_response("<html><body>temporary error</body></html>")
 
     def test_failed_unpack_does_not_create_a_working_folder(self):
         with TemporaryDirectory() as temp:

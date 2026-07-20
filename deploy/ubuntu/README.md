@@ -21,11 +21,10 @@ cd /opt/unpack-module
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements-production.txt
-.venv/bin/playwright install --with-deps chromium
 cp .env.example .env
 ```
 
-Fill `LOGIN_USER` and `ADMIN_PASSWORD` in `.env`. Create directories for incoming
+Fill `SBORKA_API_KEY` in `.env`. Create directories for incoming
 archives and processed files, and make them writable by the service account.
 
 ## 3. Run as a service
@@ -45,4 +44,3 @@ sudo systemctl status unpack-module
 The application listens on `127.0.0.1:5050`. Put nginx or another authenticated
 reverse proxy in front of it if remote access is required. Do not expose the
 Flask application directly to the internet.
-

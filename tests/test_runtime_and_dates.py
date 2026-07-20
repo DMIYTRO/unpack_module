@@ -1,9 +1,7 @@
 import sys
 import unittest
-from datetime import date
 from pathlib import Path
 from unittest.mock import Mock, patch
-from urllib.parse import parse_qs, urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -11,23 +9,35 @@ sys.path.insert(0, str(PROJECT_ROOT / "web"))
 
 import runtime
 import scheduler
-from website_parser import OrderDataError, build_orders_url
+from website_parser import OrderDataError, fetch_suborders, parse_suborders_response
 
 
-class WebsiteDateRangeTests(unittest.TestCase):
-    def test_order_search_dates_follow_current_date(self):
-        url = build_orders_url("25509667", today=date(2026, 7, 18))
-        query = parse_qs(urlparse(url).query)
-
-        self.assertEqual(query["datefrom"], ["2026-05-19"])
-        self.assertEqual(query["datetill"], ["2026-07-19"])
-        self.assertEqual(query["datefrom2"], ["2026-05-19"])
-        self.assertEqual(query["datetill2"], ["2026-07-19"])
-        self.assertEqual(query["orderid"], ["25509667"])
-
-    def test_invalid_order_is_rejected_before_url_is_built(self):
+class SborkaApiTests(unittest.TestCase):
+    def test_invalid_order_is_rejected_before_request(self):
         with self.assertRaises(OrderDataError):
-            build_orders_url("2550&statuss=1")
+            fetch_suborders("2550&statuss=1", api_key="test-key")
+
+    def test_response_is_deduplicated_and_sorted_numerically(self):
+        self.assertEqual(
+            parse_suborders_response("25509673, 25509671,25509673,"),
+            ["25509671", "25509673"],
+        )
+
+    @patch("website_parser.requests.post")
+    def test_only_get_suborders_request_is_used(self, post):
+        response = Mock(text="25509671,25509673,")
+        response.raise_for_status.return_value = None
+        post.return_value = response
+
+        result = fetch_suborders("25509667", api_key="test-key", timeout=7)
+
+        self.assertEqual(result, ["25509671", "25509673"])
+        post.assert_called_once_with(
+            "https://sborka.ua/api.php",
+            params={"action": "getSubOrders", "id": "25509667"},
+            data={"api_key": "test-key"},
+            timeout=7,
+        )
 
 
 class SchedulerLifecycleTests(unittest.TestCase):

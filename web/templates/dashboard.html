@@ -89,7 +89,7 @@
       if (txt.includes('✅') || txt.includes('Успешно') || txt.includes('[FACE]') || txt.includes('[BACK]')) cls = 'log-ok';
       else if (txt.includes('❌') || txt.includes('[ERROR]') || txt.includes('АЛЕРТ')) cls = 'log-err';
       else if (txt.includes('⚠') || txt.includes('⏸') || txt.includes('КОНФЛИКТ')) cls = 'log-warn';
-      else if (txt.includes('[SITE]') || txt.includes('Playwright')) cls = 'log-site';
+      else if (txt.includes('[SITE]') || txt.includes('Playwright') || txt.includes('[API]')) cls = 'log-site';
       else if (txt.includes('[+]') || txt.includes('[✓]') || txt.includes('===')) cls = 'log-info';
       return `<span class="${cls}">${txt.replace(/</g,'&lt;')}</span>`;
     }
