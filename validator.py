@@ -56,6 +56,6 @@ if __name__ == "__main__":
     print(f"{'Folder Name':<80} | {'Status'}")
     print("-" * 100)
     for folder in test_dir.iterdir():
-        if folder.is_dir():
+        if folder.is_dir() and not folder.name.startswith(("_", ".")):
             status = validate_folder(str(folder))
             print(f"{folder.name[:78]:<80} | {status}")

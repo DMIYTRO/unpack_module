@@ -19,6 +19,7 @@ from atomic_rename import atomic_rename_many
 
 # Маркер успешной обработки папки
 DONE_MARKER = ".done"
+CONFLICT_MARKER = ".conflict_pending"
 # Папка для проблемных заказов
 MANUAL_CHECK_DIR = "_REQUIRES_MANUAL_CHECK_"
 
@@ -171,6 +172,11 @@ def is_already_done(folder: Path) -> bool:
     return (folder / DONE_MARKER).exists()
 
 
+def has_pending_conflict(folder: Path) -> bool:
+    """Проверяет, ожидает ли папка решения оператора."""
+    return (folder / CONFLICT_MARKER).exists()
+
+
 def mark_as_done(folder: Path, archive_dir: Path | None = None):
     """Создаёт маркер-файл, чтобы не обрабатывать папку повторно, и переносит архив в _DONE_."""
     (folder / DONE_MARKER).write_text(
@@ -245,12 +251,16 @@ def process_archives(source_dir: str, output_dir: str | None = None):
         # Игнорируем файлы и служебные папки
         if not folder.is_dir():
             continue
-        if folder.name.startswith("_"):
+        if folder.name.startswith(("_", ".")):
             continue
 
         # ✅ ИСПРАВЛЕНИЕ 1: Пропускаем уже обработанные папки
         if is_already_done(folder):
             print(f"\n[✓] Уже обработано, пропуск: {folder.name}")
+            continue
+
+        if has_pending_conflict(folder):
+            print(f"\n[⏸] Ожидает решения оператора, пропуск: {folder.name}")
             continue
 
         # Валидируем папку

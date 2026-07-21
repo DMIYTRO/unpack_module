@@ -137,6 +137,28 @@ class RenameLogParsingTests(unittest.TestCase):
 
 
 class ConflictResolutionTests(unittest.TestCase):
+    def test_approved_conflict_removes_pending_marker(self):
+        with TemporaryDirectory() as temp:
+            folder = Path(temp) / "order"
+            folder.mkdir()
+            (folder / "source.tif").write_text("layout", encoding="utf-8")
+            marker = folder / ".conflict_pending"
+            marker.write_text("pending", encoding="utf-8")
+            conflict = {
+                "status": "pending",
+                "folder_name": str(folder),
+                "run_id": "run-1",
+                "mapping_json": '[["source.tif", "1", "renamed.tif"]]',
+                "archive_dir": temp,
+            }
+            with patch("db.get_conflict", return_value=conflict), patch("db.log_rename"), patch(
+                "db.resolve_conflict"
+            ), patch("main.move_archive_to_done"):
+                pipeline_runner.resolve_conflict(1, "approve")
+
+            self.assertFalse(marker.exists())
+            self.assertTrue((folder / ".done").exists())
+
     def test_missing_conflict_source_is_not_logged_or_marked_done(self):
         with TemporaryDirectory() as temp:
             folder = Path(temp) / "order"

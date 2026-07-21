@@ -1,8 +1,11 @@
+import os
 import sys
 import unittest
 import zipfile
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -10,6 +13,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from unpack import (
     MAX_ARCHIVE_SIZE_BYTES,
     _extract_zip_safely,
+    _preflight_rar,
+    _validate_archive_member_names,
+    cleanup_stale_extracting_dirs,
     decode_legacy_zip_name,
     unpack_archives,
 )
@@ -104,6 +110,71 @@ class LegacyZipEncodingTests(unittest.TestCase):
 
 
 class ArchiveLimitTests(unittest.TestCase):
+    def test_zip_bomb_metadata_is_rejected_before_writing(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive_path = root / "bomb.zip"
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("large.txt", b"0" * 100_000)
+
+            output = root / "output"
+            output.mkdir()
+            with patch("unpack.MAX_COMPRESSION_RATIO", 2):
+                with self.assertRaisesRegex(RuntimeError, "Коэффициент распаковки"):
+                    _extract_zip_safely(archive_path, output)
+
+    def test_rar_path_traversal_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "небезопасный путь"):
+            _validate_archive_member_names(["layouts/front.tif", "../outside.tif"], "RAR")
+
+    def test_rar_is_listed_before_extraction(self):
+        with TemporaryDirectory() as temp:
+            archive = Path(temp) / "safe.rar"
+            archive.write_bytes(b"rar")
+            listing = (
+                b"Name: layouts/front.tif\nType: File\nSize: 100\nPacked size: 50\n\n"
+                b"Name: layouts/back.tif\nType: File\nSize: 100\nPacked size: 50\n\n"
+            )
+            completed = Mock(stdout=listing, stderr=b"")
+            with patch("unpack.subprocess.run", return_value=completed) as run:
+                _preflight_rar("unrar", archive)
+
+            self.assertEqual(run.call_args.args[0][:4], ["unrar", "lt", "-c-", "-p-"])
+
+    def test_old_extracting_folder_is_removed_but_fresh_one_is_kept(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            old = root / ".extracting_old_123"
+            fresh = root / ".extracting_fresh_456"
+            unrelated = root / ".cache"
+            old.mkdir()
+            fresh.mkdir()
+            unrelated.mkdir()
+            now = time.time()
+            os.utime(old, (now - 100_000, now - 100_000))
+
+            removed = cleanup_stale_extracting_dirs(root, now=now)
+
+            self.assertEqual(removed, [old])
+            self.assertFalse(old.exists())
+            self.assertTrue(fresh.exists())
+            self.assertTrue(unrelated.exists())
+
+    def test_pending_conflict_keeps_archive_retryable(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "order_4-0.zip"
+            with zipfile.ZipFile(archive, "w") as zip_file:
+                zip_file.writestr("layout.tif", b"layout")
+            folder = root / "order_4-0"
+            folder.mkdir()
+            (folder / ".conflict_pending").write_text("pending", encoding="utf-8")
+
+            unpack_archives(str(root))
+
+            self.assertTrue(archive.exists())
+            self.assertFalse((root / "_TROUBLES_").exists())
+
     def test_archive_over_one_and_half_gb_moves_to_troubles(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)

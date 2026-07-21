@@ -57,6 +57,23 @@ class SafetyGuardTests(unittest.TestCase):
         self.assertEqual(parse_filename(name)["sides"], "4-4")
         self.assertEqual(parse_sides_from_foldername(name), "4-4")
 
+    def test_sides_support_up_to_six(self):
+        self.assertEqual(parse_filename("job_6-6_T100_(1-25500000)")["sides"], "6-6")
+        self.assertEqual(parse_filename("job-4-0-face_(1-25500000)")["sides"], "4-0")
+
+    def test_sides_above_six_and_dates_are_not_parsed(self):
+        self.assertIsNone(parse_filename("job_7-7_T100_(1-25500000)")["sides"])
+        self.assertIsNone(parse_filename("job_21-07-2026_(1-25500000)")["sides"])
+
+    def test_hidden_top_level_folder_is_not_validated(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            hidden = root / ".extracting_order_4-0"
+            hidden.mkdir()
+            with patch("main.unpack_archives"), patch("main.validate_folder") as validate:
+                self.assertTrue(process_archives(str(root)))
+            validate.assert_not_called()
+
     def test_unexpected_api_response_is_an_explicit_error(self):
         with self.assertRaises(OrderDataError):
             parse_suborders_response("<html><body>temporary error</body></html>")

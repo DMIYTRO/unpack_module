@@ -1,7 +1,11 @@
 import os
+import json
+import posixpath
+import re
 import shutil
 import stat
 import subprocess
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -11,11 +15,20 @@ from datetime import datetime
 TROUBLES_DIR = "_TROUBLES_"
 EXTRACT_TIMEOUT_SECONDS = 15 * 60
 MAX_ARCHIVE_SIZE_BYTES = 1_500_000_000
+MAX_EXTRACTED_SIZE_BYTES = 1_500_000_000
+MAX_ARCHIVE_MEMBERS = 10_000
+MAX_COMPRESSION_RATIO = 200
 ZIP_UTF8_FLAG = 0x800
+CONFLICT_MARKER = ".conflict_pending"
+STALE_TEMP_AGE_SECONDS = 24 * 60 * 60
 
 
 class ArchiveLimitError(RuntimeError):
     """Архив превышает разрешённый размер."""
+
+
+class ArchiveSafetyError(RuntimeError):
+    """Содержимое архива нельзя безопасно распаковать."""
 
 
 def _unique_path(directory: Path, filename: str) -> Path:
@@ -24,6 +37,24 @@ def _unique_path(directory: Path, filename: str) -> Path:
     if not candidate.exists():
         return candidate
     return directory / f"{Path(filename).stem}_{datetime.now().strftime('%H%M%S')}{Path(filename).suffix}"
+
+
+def cleanup_stale_extracting_dirs(output_path: Path, *, now: float | None = None) -> list[Path]:
+    """Удаляет только старые служебные каталоги незавершённой распаковки."""
+    removed = []
+    current_time = time.time() if now is None else now
+    for candidate in output_path.iterdir():
+        if not candidate.is_dir() or not candidate.name.startswith(".extracting_"):
+            continue
+        try:
+            if current_time - candidate.stat().st_mtime < STALE_TEMP_AGE_SECONDS:
+                continue
+            shutil.rmtree(candidate)
+            removed.append(candidate)
+            print(f"🧹 Удалена зависшая временная папка: {candidate.name}")
+        except OSError as exc:
+            print(f"⚠️ Не удалось удалить временную папку {candidate.name}: {exc}")
+    return removed
 
 
 def _find_extractor() -> str | None:
@@ -58,6 +89,146 @@ def _build_command(tool: str, rar_file: Path, extract_dir: Path) -> list[str]:
         return [tool, "x", str(rar_file), f"-o{extract_dir}", "-aoa", "-y"]
 
     raise ValueError(f"Неизвестный инструмент: {tool}")
+
+
+def _validate_archive_member_names(names: list[str], archive_type: str) -> None:
+    """Отклоняет абсолютные, выходящие наружу и повторяющиеся пути."""
+    destinations: set[str] = set()
+    for original_name in names:
+        member_name = original_name.replace("\\", "/")
+        normalized = posixpath.normpath(member_name)
+        if (
+            not member_name
+            or "\x00" in member_name
+            or member_name.startswith("/")
+            or re.match(r"^[A-Za-z]:", member_name)
+            or normalized in {"", ".", ".."}
+            or normalized.startswith("../")
+        ):
+            raise ArchiveSafetyError(f"{archive_type} содержит небезопасный путь: {original_name}")
+        destination_key = normalized.casefold()
+        if destination_key in destinations:
+            raise ArchiveSafetyError(f"{archive_type} содержит повторяющийся путь: {original_name}")
+        destinations.add(destination_key)
+
+
+def _check_archive_limits(
+    members: list[tuple[str, int, int]],
+    archive_type: str,
+) -> None:
+    """Проверяет количество, распакованный объём и коэффициент сжатия."""
+    if len(members) > MAX_ARCHIVE_MEMBERS:
+        raise ArchiveLimitError(
+            f"{archive_type} содержит слишком много элементов: {len(members)} (лимит {MAX_ARCHIVE_MEMBERS})"
+        )
+    total_uncompressed = sum(max(size, 0) for _, size, _ in members)
+    total_compressed = sum(max(size, 0) for _, _, size in members)
+    if total_uncompressed > MAX_EXTRACTED_SIZE_BYTES:
+        raise ArchiveLimitError(
+            f"Распакованный размер {archive_type} превышает лимит 1,5 ГБ"
+        )
+    if total_uncompressed and total_compressed == 0:
+        raise ArchiveLimitError(f"{archive_type} имеет недостоверный сжатый размер")
+    if total_compressed and total_uncompressed / total_compressed > MAX_COMPRESSION_RATIO:
+        raise ArchiveLimitError(
+            f"Коэффициент распаковки {archive_type} превышает лимит {MAX_COMPRESSION_RATIO}:1"
+        )
+
+
+def _preflight_rar(tool: str, rar_file: Path) -> None:
+    """Получает список RAR до извлечения и проверяет его пути и размеры."""
+    members: list[tuple[str, int, int]] = []
+    if tool == "unar":
+        lsar = shutil.which("lsar")
+        if not lsar:
+            raise ArchiveSafetyError("Для безопасной проверки unar требуется утилита lsar")
+        result = subprocess.run(
+            [lsar, "-j", str(rar_file)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=EXTRACT_TIMEOUT_SECONDS,
+        )
+        payload = json.loads(result.stdout.decode("utf-8"))
+        for item in payload.get("lsarContents", []):
+            name = item.get("XADFileName")
+            if not name:
+                continue
+            if item.get("XADIsLink") or item.get("XADFileType") in {"SymbolicLink", "HardLink"}:
+                raise ArchiveSafetyError(f"RAR содержит ссылку: {name}")
+            members.append((name, int(item.get("XADFileSize", 0)), int(item.get("XADCompressedSize", 0))))
+    elif tool == "unrar":
+        result = subprocess.run(
+            ["unrar", "lt", "-c-", "-p-", str(rar_file)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=EXTRACT_TIMEOUT_SECONDS,
+        )
+        current: dict[str, str] = {}
+        for line in result.stdout.decode("utf-8", errors="strict").splitlines():
+            stripped = line.strip()
+            if not stripped and current.get("Name"):
+                entry_type = current.get("Type", "").casefold()
+                if "link" in entry_type:
+                    raise ArchiveSafetyError(f"RAR содержит ссылку: {current['Name']}")
+                members.append((
+                    current["Name"],
+                    int(current.get("Size", "0").replace(" ", "")),
+                    int(current.get("Packed size", "0").replace(" ", "")),
+                ))
+                current = {}
+                continue
+            if ": " in stripped:
+                key, value = stripped.split(": ", 1)
+                if key in {"Name", "Type", "Size", "Packed size"}:
+                    current[key] = value
+        if current.get("Name"):
+            members.append((
+                current["Name"],
+                int(current.get("Size", "0").replace(" ", "")),
+                int(current.get("Packed size", "0").replace(" ", "")),
+            ))
+    else:
+        result = subprocess.run(
+            [tool, "l", "-slt", "-p-", "--", str(rar_file)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=EXTRACT_TIMEOUT_SECONDS,
+        )
+        current: dict[str, str] = {}
+        in_members = False
+        for line in result.stdout.decode("utf-8", errors="strict").splitlines():
+            if line.startswith("----------"):
+                in_members = True
+                continue
+            if not in_members:
+                continue
+            if not line.strip() and current:
+                name = current.get("Path")
+                if name:
+                    if current.get("Symbolic Link") or current.get("Hard Link"):
+                        raise ArchiveSafetyError(f"RAR содержит ссылку: {name}")
+                    members.append((name, int(current.get("Size") or 0), int(current.get("Packed Size") or 0)))
+                current = {}
+                continue
+            if " = " in line:
+                key, value = line.split(" = ", 1)
+                current[key] = value
+        if current.get("Path"):
+            members.append((current["Path"], int(current.get("Size") or 0), int(current.get("Packed Size") or 0)))
+
+    if not members:
+        raise ArchiveSafetyError("Не удалось получить список содержимого RAR")
+    _validate_archive_member_names([name for name, _, _ in members], "RAR")
+    _check_archive_limits(members, "RAR")
+
+
+def _reject_extracted_links(root: Path) -> None:
+    for candidate in root.rglob("*"):
+        if candidate.is_symlink():
+            raise ArchiveSafetyError(f"Архив содержит ссылку: {candidate.relative_to(root)}")
 
 
 def _legacy_name_score(value: str) -> int:
@@ -118,8 +289,14 @@ def _extract_zip_safely(zip_file: Path, extract_dir: Path):
     """Безопасно распаковывает ZIP и восстанавливает старые имена кириллицей."""
     root = extract_dir.resolve()
     destinations: set[Path] = set()
+    written_bytes = 0
     with zipfile.ZipFile(zip_file) as archive:
-        for member in archive.infolist():
+        archive_members = archive.infolist()
+        _check_archive_limits(
+            [(member.filename, member.file_size, member.compress_size) for member in archive_members],
+            "ZIP",
+        )
+        for member in archive_members:
             member_name = decode_legacy_zip_name(member.filename, member.flag_bits)
             member_name = member_name.replace("\\", "/")
             destination = (root / member_name).resolve()
@@ -138,7 +315,11 @@ def _extract_zip_safely(zip_file: Path, extract_dir: Path):
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(member) as source, destination.open("wb") as target:
-                shutil.copyfileobj(source, target)
+                while chunk := source.read(1024 * 1024):
+                    written_bytes += len(chunk)
+                    if written_bytes > MAX_EXTRACTED_SIZE_BYTES:
+                        raise ArchiveLimitError("Фактический распакованный размер ZIP превышает лимит 1,5 ГБ")
+                    target.write(chunk)
 
 
 def unpack_archives(source_dir: str, output_dir: str | None = None):
@@ -153,6 +334,7 @@ def unpack_archives(source_dir: str, output_dir: str | None = None):
         print(f"Директория с архивами {source_dir} не найдена.")
         return
     output_path.mkdir(parents=True, exist_ok=True)
+    cleanup_stale_extracting_dirs(output_path)
 
     archive_files = sorted(
         (item for item in source_path.iterdir() if item.is_file() and item.suffix.lower() in {".rar", ".zip"}),
@@ -185,6 +367,9 @@ def unpack_archives(source_dir: str, output_dir: str | None = None):
     for archive_file in archive_files:
         folder_name = archive_file.stem
         extract_dir = output_path / folder_name
+        if (extract_dir / CONFLICT_MARKER).is_file():
+            print(f"\n⏸ {archive_file.name}: конфликт ожидает решения оператора, архив оставлен на месте.")
+            continue
         # Никогда не распаковываем поверх имеющейся папки: это может смешать
         # старые и новые файлы при повторном запуске.
         extract_dir_exists = extract_dir.exists()
@@ -213,6 +398,7 @@ def unpack_archives(source_dir: str, output_dir: str | None = None):
             if archive_file.suffix.lower() == ".zip":
                 _extract_zip_safely(archive_file, temp_dir)
             else:
+                _preflight_rar(tool, archive_file)
                 cmd = _build_command(tool, archive_file, temp_dir)
                 subprocess.run(
                     cmd,
@@ -221,6 +407,7 @@ def unpack_archives(source_dir: str, output_dir: str | None = None):
                     stderr=subprocess.PIPE,
                     timeout=EXTRACT_TIMEOUT_SECONDS,
                 )
+                _reject_extracted_links(temp_dir)
             # Публикуем результат только после успешной распаковки.
             temp_dir.replace(extract_dir)
             print("Успешно распаковано.")
@@ -238,8 +425,8 @@ def unpack_archives(source_dir: str, output_dir: str | None = None):
             error_reason = f"Ошибка распаковки ({tool}): {error_msg}"
             print(f"❌ {error_reason}")
 
-        except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, NotImplementedError, ValueError) as e:
-            error_reason = f"Ошибка распаковки ZIP: {e}"
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, NotImplementedError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            error_reason = f"Ошибка безопасной проверки или распаковки: {e}"
             print(f"❌ {error_reason}")
 
         except subprocess.TimeoutExpired:

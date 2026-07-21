@@ -11,6 +11,17 @@ import db
 
 
 class ManualPathSettingsTests(unittest.TestCase):
+    def test_pending_conflict_is_deduplicated_by_folder(self):
+        with TemporaryDirectory() as temp:
+            database = Path(temp) / "history.db"
+            with patch.object(db, "DB_PATH", database):
+                db.init_db()
+                first = db.save_conflict("run-1", "/orders/one", ["a.tif"], ["1"], [])
+                second = db.save_conflict("run-2", "/orders/one", ["b.tif"], ["2"], [])
+
+                self.assertEqual(second, first)
+                self.assertEqual(len(db.get_pending_conflicts()), 1)
+
     def test_manual_paths_survive_database_reopen(self):
         with TemporaryDirectory() as temp:
             database = Path(temp) / "history.db"

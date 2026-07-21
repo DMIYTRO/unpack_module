@@ -136,6 +136,14 @@ def get_rename_history(limit=300, search=None, date_from=None):
 
 def save_conflict(run_id, folder_name, files, suborders, mapping, archive_dir=None):
     conn = get_db()
+    existing = conn.execute(
+        "SELECT id FROM conflicts WHERE folder_name=? AND status='pending' ORDER BY id DESC LIMIT 1",
+        (folder_name,),
+    ).fetchone()
+    if existing:
+        conflict_id = existing["id"]
+        conn.close()
+        return conflict_id
     cur = conn.execute(
         "INSERT INTO conflicts (run_id, timestamp, folder_name, files_json, suborders_json, mapping_json, archive_dir) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",

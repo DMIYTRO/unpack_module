@@ -20,6 +20,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from atomic_rename import atomic_rename_many
 
+CONFLICT_MARKER = ".conflict_pending"
+
 # Глобальные хранилища (живут пока Flask-процесс работает)
 run_queues: dict[str, Queue] = {}          # run_id → очередь строк лога
 run_processes: dict[str, object] = {}      # run_id → subprocess.Popen
@@ -102,6 +104,11 @@ def _worker(run_id: str, source_dir: str, output_dir: str):
                         data["suborders"],
                         data["mapping"],
                         data.get("archive_dir"),
+                    )
+                    folder_path = Path(data["folder_path"])
+                    (folder_path / CONFLICT_MARKER).write_text(
+                        f"Конфликт #{conflict_id} ожидает решения оператора.\n",
+                        encoding="utf-8",
                     )
                     q.put(
                         f"⏸ КОНФЛИКТ #{conflict_id}: {data['folder_name']} — "
@@ -241,6 +248,7 @@ def resolve_conflict(conflict_id: int, action: str, mapping: list[list[str]] | N
         return
 
     folder_path = Path(conflict["folder_name"])
+    conflict_marker = folder_path / CONFLICT_MARKER
     run_id = conflict["run_id"]
 
     if action == "approve":
@@ -264,6 +272,7 @@ def resolve_conflict(conflict_id: int, action: str, mapping: list[list[str]] | N
             f"Обработано оператором через веб-интерфейс: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
             encoding="utf-8",
         )
+        conflict_marker.unlink(missing_ok=True)
         
         # Переносим соответствующий архив в _DONE_
         try:
@@ -281,6 +290,7 @@ def resolve_conflict(conflict_id: int, action: str, mapping: list[list[str]] | N
         if dest_folder.exists():
             dest_folder = dest_dir / (folder_path.name + "_" + datetime.now().strftime("%H%M%S"))
         
+        conflict_marker.unlink(missing_ok=True)
         if folder_path.exists():
             shutil.move(str(folder_path), str(dest_folder))
             

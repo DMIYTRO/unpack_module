@@ -27,6 +27,7 @@ from website_parser import OrderDataError, SiteAccessError, fetch_suborders
 
 
 DONE_MARKER = ".done"
+CONFLICT_MARKER = ".conflict_pending"
 DONE_DIR = "_DONE_"
 MANUAL_CHECK_DIR = "_REQUIRES_MANUAL_CHECK_"
 
@@ -233,9 +234,12 @@ def process_archives_with_api(
     summary = ProcessingSummary()
 
     for folder in sorted(output_path.iterdir(), key=lambda item: item.name.casefold()):
-        if not folder.is_dir() or folder.name.startswith("_"):
+        if not folder.is_dir() or folder.name.startswith(("_", ".")):
             continue
         if (folder / DONE_MARKER).exists():
+            summary.skipped.append(folder.name)
+            continue
+        if (folder / CONFLICT_MARKER).exists():
             summary.skipped.append(folder.name)
             continue
 
